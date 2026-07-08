@@ -1,0 +1,75 @@
+name: ${PROJECT_NAME:-ai-career-agent}
+
+x-common-env: &common-env
+  TZ: ${TZ:-Europe/Moscow}
+  APP_ENV: ${APP_ENV:-local}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+
+services:
+  postgres:
+    profiles:
+      - local-infra
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ai_career_agent}
+      POSTGRES_USER: ${POSTGRES_USER:-ai_career_agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      TZ: ${TZ:-Europe/Moscow}
+      PGTZ: ${TZ:-Europe/Moscow}
+    ports:
+      - "${POSTGRES_LOCAL_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ai_career_agent} -d ${POSTGRES_DB:-ai_career_agent}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ai-career-agent
+
+  n8n:
+    profiles:
+      - local-infra
+    image: ${N8N_IMAGE:-docker.n8n.io/n8nio/n8n:latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
+      N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL:-http://localhost:5679}
+      WEBHOOK_URL: ${WEBHOOK_URL:-http://localhost:5679}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-change_me}
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_RUNNERS_ENABLED: ${N8N_RUNNERS_ENABLED:-true}
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: ${POSTGRES_HOST:-postgres}
+      DB_POSTGRESDB_PORT: ${POSTGRES_PORT:-5432}
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB:-ai_career_agent}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER:-ai_career_agent}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      DB_POSTGRESDB_SCHEMA: ${N8N_POSTGRES_SCHEMA:-public}
+    ports:
+      - "${N8N_LOCAL_PORT:-5679}:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/workflows:/workspace/workflows
+    networks:
+      - ai-career-agent
+
+networks:
+  ai-career-agent:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  n8n_data:
