@@ -26,3 +26,5 @@ powershell -ExecutionPolicy Bypass -File .\scripts\validate-migrations.ps1 -Mode
 Block 3 adds ingestion helper functions and workflow support SQL. Verification SQL for collection helpers lives in `database/sql/verify_block3_collection.sql`.
 
 Block 4 adds AI decision engine tables, per-profile analysis enhancements, and workflow support SQL. Verification SQL for the AI decision engine lives in `database/sql/verify_block4_decision_engine.sql`.
+
+Block 5 adds Telegram delivery outbox helpers, callback-action capture support, and journal-contract support SQL. Verification SQL for the delivery engine lives in `database/sql/verify_block5_telegram_delivery.sql`.

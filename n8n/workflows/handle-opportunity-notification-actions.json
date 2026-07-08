@@ -1,0 +1,232 @@
+{
+  "name": "Handle Opportunity Notification Actions",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telegram-opportunity-actions",
+        "responseMode": "responseNode"
+      },
+      "id": "d93da4e3-c268-4c45-ab33-29ed7449d9bf",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body ?? $json;\nconst callback = body.callback_query ?? body.callbackQuery ?? null;\nconst rawData = String(callback?.data || '').trim();\nconst match = /^notif:([0-9a-fA-F-]{36}):(save|not_interested|later)$/.exec(rawData);\nreturn [{\n  json: {\n    has_supported_action: Boolean(match && callback?.id),\n    callback_query_id: callback?.id || null,\n    notification_id: match ? match[1] : null,\n    action: match ? match[2] : null,\n    callback_payload: body,\n    response_text: match ? {\n      save: 'Сохранено.',\n      not_interested: 'Понял, больше не поднимаю это решение.',\n      later: 'Отложил на потом.'\n    }[match[2]] : 'Действие сейчас недоступно.',\n  },\n}];"
+      },
+      "id": "47e6ad26-f708-4840-a5ec-d41fc3bd9ab6",
+      "name": "Parse Callback Action",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.has_supported_action }}",
+              "operation": "true"
+            }
+          ]
+        }
+      },
+      "id": "4cb81a80-ea8f-49bf-8347-345e37637636",
+      "name": "Callback Action Supported?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        780,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT *\nFROM delivery_record_notification_action(\n  $1::uuid,\n  $2::text,\n  $3::jsonb\n);",
+        "options": {
+          "queryReplacement": [
+            "={{ $json.notification_id }}",
+            "={{ $json.action }}",
+            "={{ JSON.stringify($json.callback_payload) }}"
+          ]
+        }
+      },
+      "id": "b3022ec7-b48f-494c-b5df-9081db0f1ec7",
+      "name": "Record Notification Action",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1060,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ (($env.TELEGRAM_BOT_API_BASE_URL || 'https://api.telegram.org').replace(/\\/$/, '')) + '/bot' + $env.TELEGRAM_BOT_TOKEN + '/answerCallbackQuery' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { callback_query_id: $('Parse Callback Action').first().json.callback_query_id, text: $('Parse Callback Action').first().json.response_text, show_alert: false } }}",
+        "options": {
+          "timeout": "={{ Number($env.TELEGRAM_REQUEST_TIMEOUT_MS || 30000) }}"
+        }
+      },
+      "id": "9efe8ca8-271d-4ca7-b518-af1ea91f06dc",
+      "name": "Respond Callback Action",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1340,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ (($env.TELEGRAM_BOT_API_BASE_URL || 'https://api.telegram.org').replace(/\\/$/, '')) + '/bot' + $env.TELEGRAM_BOT_TOKEN + '/answerCallbackQuery' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { callback_query_id: $('Parse Callback Action').first().json.callback_query_id, text: 'Действие сейчас недоступно.', show_alert: false } }}",
+        "options": {
+          "timeout": "={{ Number($env.TELEGRAM_REQUEST_TIMEOUT_MS || 30000) }}"
+        }
+      },
+      "id": "20e40393-c514-4707-8f5a-ac7f433bcb86",
+      "name": "Respond Unsupported Action",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1060,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { received: true, handled: true } }}"
+      },
+      "id": "0ef0aa9b-c31e-40d0-a6a7-b7e8dc54718b",
+      "name": "Return Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1620,
+        260
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Parse Callback Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Callback Action": {
+      "main": [
+        [
+          {
+            "node": "Callback Action Supported?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Callback Action Supported?": {
+      "main": [
+        [
+          {
+            "node": "Respond Unsupported Action",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Notification Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Notification Action": {
+      "main": [
+        [
+          {
+            "node": "Respond Callback Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond Callback Action": {
+      "main": [
+        [
+          {
+            "node": "Return Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond Unsupported Action": {
+      "main": [
+        [
+          {
+            "node": "Return Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Moscow",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true
+  },
+  "active": false,
+  "meta": null
+}

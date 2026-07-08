@@ -10,5 +10,6 @@ Current long-lived documents include:
 - `database.md`
 - `opportunity-collection.md`
 - `ai-decision-engine.md`
+- `telegram-delivery-engine.md`
 
 Every major technical decision should be documented before it becomes difficult to reverse.

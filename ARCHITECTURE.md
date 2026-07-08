@@ -8,6 +8,7 @@
 - Configuration and secrets separated from source code
 - Incremental scalability without forced rewrites
 - Provider-specific AI execution isolated from scoring and persistence rules
+- Delivery transport isolated from AI decision state
 
 ## Chosen Repository Model
 
@@ -24,7 +25,7 @@ Reserved under `apps/`.
 - `apps/api/` is intended for the future synchronous application boundary.
 - `apps/worker/` is intended for future asynchronous workloads.
 
-No backend API or worker business logic is introduced in Block 4.
+No backend API or worker business logic is introduced in Block 5.
 
 ### 2. Shared Contracts Layer
 
@@ -39,18 +40,16 @@ This layer is prepared for future schemas, DTOs, validation logic, and reusable 
 
 Current responsibility split:
 
-- `users` and `user_profiles` store user identity and broad profile context
+- `users` and `user_profiles` store user identity, broad profile context, and Telegram delivery target metadata
 - `user_intelligence_profiles` stores the editable machine-readable decision profile used by the AI engine
 - `sources` stores the controlled catalog of ingestion sources
 - `opportunities` stores the canonical opportunity record and deduplication metadata
 - `opportunity_analysis_jobs` stores durable AI queue, retry, and lock state
 - `opportunity_ai_analysis` stores append-only per-profile AI analysis snapshots
 - `opportunity_scores` stores normalized per-profile score history by score type
-- `notifications` stores future outbound notification state
-- `google_sheets_journal` stores the future lightweight export contract
+- `notifications` stores the delivery outbox and notification execution state
+- `google_sheets_journal` stores the lightweight journal contract for successful deliveries
 - `source_run_logs` and `system_logs` store structured operational telemetry
-
-The data layer separates canonical records from derived records. Opportunities remain the central source-derived entity, while queue state, analysis, scoring, notifications, and journaling are modeled in adjacent tables to preserve history and reduce coupling.
 
 ### 4. Automation Layer
 
@@ -59,14 +58,17 @@ Reserved under `n8n/`.
 - `n8n/workflows/` is for source-controlled workflow definitions.
 - `n8n/exports/` is for versioned exports or handoff artifacts when needed.
 
-n8n is positioned as the automation and integration runtime. It coordinates workflows, triggers actions, and integrates systems, but persistent business state remains owned by PostgreSQL.
+n8n coordinates collection, AI analysis, and Telegram delivery, but persistent business state remains owned by PostgreSQL.
 
 Current maintained workflows:
 
 - `Collect Opportunities`
 - `Analyze Opportunities`
+- `Send Opportunity Notifications`
 
-The first workflow collects and normalizes source data. The second workflow claims queued opportunities, calls OpenAI, parses the structured response, and persists the result through PostgreSQL helper functions.
+Prepared callback template:
+
+- `Handle Opportunity Notification Actions`
 
 ### 5. Configuration Layer
 
@@ -84,17 +86,13 @@ Secrets are never committed to the repository.
 
 The future primary implementation runtime remains Node.js LTS with TypeScript.
 
-This keeps build, lint, test, and deployment pipelines simpler while still fitting API orchestration, integrations, and future application services. The architecture stays intentionally scalable without becoming prematurely polyglot.
+The current delivery implementation intentionally stays inside PostgreSQL plus n8n to avoid introducing a dedicated delivery service before it is justified by actual scale.
 
 ## Docker Compose Strategy
 
 The root `docker-compose.yml` remains a safe local-stack baseline, not a production deployment manifest.
 
-Key decisions:
-
-- services are behind an optional `local-infra` profile
-- existing infrastructure is not modified by the repository
-- the file acts as a controlled starting point for isolated local bring-up when a later block requires it
+It exposes the environment variables required for collection, AI analysis, and Telegram delivery when a local `n8n` stack is intentionally started.
 
 ## Data And Ownership Boundaries
 
@@ -104,20 +102,26 @@ Key decisions:
 - Operational scripts belong in `scripts/`.
 - Documentation and decisions belong in `docs/`.
 
-For collection specifically:
+For collection:
 
-- source-specific fetch logic lives in n8n connector branches
-- source normalization happens before persistence
+- source-specific fetch logic lives in n8n branches
+- normalization happens before persistence
 - deduplication and final persistence happen in PostgreSQL helper functions
-- source failures are logged per branch
 
-For AI decisioning specifically:
+For AI decisioning:
 
 - editable user preference state lives in `user_intelligence_profiles`
 - claim, lock, retry, and replay state live in `opportunity_analysis_jobs`
 - provider-specific prompt and HTTP execution live in the workflow
 - final Opportunity Score and action thresholds live in PostgreSQL helper functions
-- analysis history remains append-only through `opportunity_ai_analysis` and `opportunity_scores`
+
+For Telegram delivery:
+
+- eligibility remains owned by current PostgreSQL AI analysis state
+- `notifications` is the outbox and retry owner
+- the workflow only syncs, claims, sends, and reports status
+- successful sends append a lightweight row to `google_sheets_journal`
+- inline action capture is prepared but deliberately isolated from scoring and learning logic
 
 ## Scalability Path
 
@@ -131,6 +135,7 @@ The current structure is ready to support the following later without repository
 - structured observability and runbooks
 - application test suites by layer
 - future API and worker services
+- feedback-learning pipelines on top of recorded Telegram actions
 
 ## Current Scope Boundary
 
@@ -139,13 +144,14 @@ The architecture currently includes:
 - PostgreSQL schema and migration assets
 - source collection through n8n
 - unified Opportunity normalization
-- deduplicated persistence and operational source logging
 - OpenAI-backed AI decisioning with per-profile persistence and deterministic final scoring
+- Telegram delivery through a PostgreSQL-owned outbox
+- lightweight Google Sheets journal contract writes after successful delivery
 
 The architecture intentionally still does not implement:
 
-- Telegram notifications
-- Google Sheets journaling
+- direct Google Sheets API export
 - backend APIs
 - web interface
 - worker services outside n8n
+- full feedback learning or adaptive re-ranking from Telegram actions

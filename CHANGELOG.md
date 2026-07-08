@@ -24,3 +24,6 @@ The format is based on Keep a Changelog and the project follows semantic version
 - Block 4 SQL helper functions for AI profile upsert, queue claiming, score calculation, analysis persistence, and failure handling
 - `Analyze Opportunities` workflow with OpenAI structured JSON analysis and PostgreSQL-backed retry handling
 - Block 4 documentation, ADR, runbooks, and workflow validation script
+- Block 5 Telegram outbox delivery helpers for target configuration, queue sync, claiming, sent/failure handling, and action capture
+- `Send Opportunity Notifications` workflow and callback workflow template for inline Telegram actions
+- Block 5 Telegram delivery documentation, runbooks, ADR, and workflow validation script

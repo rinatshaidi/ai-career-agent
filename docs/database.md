@@ -2,9 +2,9 @@
 
 ## Purpose
 
-The PostgreSQL model is intentionally focused on durable storage, traceability, deduplication, AI auditability, and future extensibility.
+The PostgreSQL model is intentionally focused on durable storage, traceability, deduplication, AI auditability, delivery idempotency, and future extensibility.
 
-PostgreSQL is the source of truth. n8n is an orchestration layer. Google Sheets is prepared only as a future lightweight export target and is not treated as a primary datastore.
+PostgreSQL is the source of truth. n8n is an orchestration layer. Google Sheets remains only a lightweight journal contract target and is not treated as a primary datastore.
 
 ## Current Tables
 
@@ -16,15 +16,15 @@ Stores the primary user record.
 
 Stores broad profile-level career context attached one-to-one to a user.
 
+Block 5 additionally uses `user_profiles.profile_data.telegram_delivery` as the Telegram routing contract for:
+
+- `chat_id`
+- `enabled`
+- `bot_name`
+
 ### `user_intelligence_profiles`
 
 Stores the machine-readable preference set used by the AI decision engine.
-
-Why it exists:
-
-- separates operational AI preference logic from the broader human profile layer
-- makes the profile editable through PostgreSQL without code changes
-- stores both preference fields and scoring-policy overrides in one governed entity
 
 ### `sources`
 
@@ -38,39 +38,29 @@ Stores canonical opportunity records with deduplication metadata.
 
 Stores durable AI analysis queue state per opportunity/profile pair.
 
-Why it exists:
-
-- prevents duplicate work during overlapping workflow runs
-- supports retry logic without relying on ephemeral n8n execution state
-- tracks attempts, lock ownership, and last failure reason
-
 ### `opportunity_ai_analysis`
 
 Stores qualitative AI analysis snapshots per opportunity and per user intelligence profile.
-
-Why it exists:
-
-- keeps narrative analysis separate from the base opportunity record
-- supports repeated analysis runs over time through append-only history
-- stores provider metadata, fit and non-fit explanations, and audit snapshots
 
 ### `opportunity_scores`
 
 Stores normalized scoring entries per opportunity, per user intelligence profile, and per score type.
 
-Why it exists:
-
-- separates ranking data from qualitative AI narrative text
-- supports multiple score dimensions and versioned scoring history
-- allows rule-based final scoring without redesigning the schema
-
 ### `notifications`
 
-Stores future notification intents and delivery state.
+Stores the delivery outbox and notification execution state.
+
+Why it exists:
+
+- prevents duplicate Telegram sends for the same opportunity/profile
+- keeps retry state outside transient workflow memory
+- stores durable send status, lock state, attempt counters, and payload snapshots
 
 ### `google_sheets_journal`
 
-Stores the future export contract for Google Sheets journaling.
+Stores the lightweight journal contract for successful deliveries.
+
+Block 5 adds `notification_id` so one successful notification can map to one journal row idempotently.
 
 ### `source_run_logs`
 
@@ -93,6 +83,8 @@ Stores structured application-level and workflow-level operational events.
 - `opportunity_scores.user_intelligence_profile_id -> user_intelligence_profiles.id`
 - `notifications.user_id -> users.id`
 - `notifications.opportunity_id -> opportunities.id`
+- `notifications.user_intelligence_profile_id -> user_intelligence_profiles.id`
+- `google_sheets_journal.notification_id -> notifications.id`
 - `google_sheets_journal.opportunity_id -> opportunities.id`
 - `source_run_logs.source_id -> sources.id`
 
@@ -100,7 +92,7 @@ Stores structured application-level and workflow-level operational events.
 
 ### PostgreSQL owns business truth
 
-Opportunities, AI queue state, analysis snapshots, scores, notifications, and telemetry are persisted in PostgreSQL instead of being delegated to n8n.
+Opportunities, AI queue state, analysis snapshots, scores, delivery state, and telemetry are persisted in PostgreSQL instead of being delegated to n8n.
 
 ### Core records and derived records are separated
 
@@ -108,22 +100,15 @@ Opportunities, AI queue state, analysis snapshots, scores, notifications, and te
 
 ### User intelligence is separated from the generic profile
 
-`user_profiles` remains the broad human-facing profile layer. `user_intelligence_profiles` is optimized for AI decision input and configurable scoring policy. This avoids mixing unstable machine-facing preferences into the general profile table.
+`user_profiles` remains the broad human-facing profile layer and also holds delivery routing metadata. `user_intelligence_profiles` stays focused on AI decision input and scoring policy.
 
-### Deduplication is explicit
+### Delivery is idempotent
 
-The schema uses both:
+Telegram delivery uses the existing `notifications` table as an outbox with a unique key for the user/profile/opportunity combination. This prevents repeated sends even if the workflow runs again.
 
-- a unique `duplicate_hash` for normalized content-level deduplication
-- a unique partial index on `(source_id, external_id)` when the source provides a stable identifier
+### AI queue state and delivery queue state are both durable
 
-### History is preserved where it matters
-
-AI analysis and scoring allow repeated recalculation over time. The `is_current` partial unique indexes keep a stable active record for each opportunity/profile pair without destroying history.
-
-### AI queue state is durable
-
-`opportunity_analysis_jobs` keeps claim and retry state in PostgreSQL. This was chosen instead of relying on workflow execution memory so that AI retries, profile edits, and overlapping schedules stay observable and recoverable.
+`opportunity_analysis_jobs` and `notifications` keep retry and lock state in PostgreSQL so that workflow restarts do not lose operational state.
 
 ## Indexing Strategy
 
@@ -131,10 +116,10 @@ The schema adds indexes for:
 
 - identity lookups
 - source and status filtering on opportunities
-- deduplication on opportunities
 - current AI analysis and current score retrieval per profile
 - analysis queue claim and retry retrieval
-- notification delivery queue access
+- notification delivery queue claim, lock recovery, and idempotency
+- journal row uniqueness per notification
 - source run telemetry lookups
 - system log filtering by source, severity, and time
 
@@ -146,8 +131,6 @@ The schema adds indexes for:
 - `collection_upsert_opportunity(...)`
 - `collection_ingest_source_batch(...)`
 
-These helpers keep collection persistence, deduplication, and run logging consistent across connectors.
-
 ### Block 4 Decision Helpers
 
 - `decision_upsert_user_intelligence_profile(...)`
@@ -157,7 +140,16 @@ These helpers keep collection persistence, deduplication, and run logging consis
 - `decision_record_ai_analysis(...)`
 - `decision_mark_ai_analysis_failed(...)`
 
-These helpers keep the queue, scoring logic, retries, and persistence contract in PostgreSQL instead of inside the workflow.
+### Block 5 Delivery Helpers
+
+- `delivery_upsert_telegram_target(...)`
+- `delivery_sync_telegram_outbox(...)`
+- `delivery_claim_notification_batch(...)`
+- `delivery_mark_notification_sent(...)`
+- `delivery_mark_notification_failed(...)`
+- `delivery_record_notification_action(...)`
+
+These helpers keep Telegram eligibility, outbox state, retries, journal writes, and lightweight callback capture in PostgreSQL instead of in workflow-local logic.
 
 ## Migration Files
 
@@ -168,6 +160,7 @@ Current migrations:
 - `database/migrations/20260708141200__create_v1_updated_at_triggers.sql`
 - `database/migrations/20260708153000__add_block3_collection_functions.sql`
 - `database/migrations/20260708170000__add_block4_ai_decision_engine.sql`
+- `database/migrations/20260708183000__add_block5_telegram_delivery_engine.sql`
 
 ## Validation Approach
 

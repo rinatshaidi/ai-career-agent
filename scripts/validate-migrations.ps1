@@ -14,7 +14,8 @@ $migrationDir = Join-Path $Root 'database\migrations'
 $verificationSqlFiles = @(
     (Join-Path $Root 'database\sql\verify_v1_schema.sql'),
     (Join-Path $Root 'database\sql\verify_block3_collection.sql'),
-    (Join-Path $Root 'database\sql\verify_block4_decision_engine.sql')
+    (Join-Path $Root 'database\sql\verify_block4_decision_engine.sql'),
+    (Join-Path $Root 'database\sql\verify_block5_telegram_delivery.sql')
 )
 
 if (-not (Test-Path -LiteralPath $migrationDir -PathType Container)) {
@@ -60,7 +61,13 @@ $requiredFunctions = @(
     'decision_determine_recommended_action',
     'decision_claim_analysis_batch',
     'decision_record_ai_analysis',
-    'decision_mark_ai_analysis_failed'
+    'decision_mark_ai_analysis_failed',
+    'delivery_upsert_telegram_target',
+    'delivery_sync_telegram_outbox',
+    'delivery_claim_notification_batch',
+    'delivery_mark_notification_sent',
+    'delivery_mark_notification_failed',
+    'delivery_record_notification_action'
 )
 
 $fullMigrationText = ($migrationFiles | ForEach-Object { Get-Content -Raw $_.FullName }) -join "`n"
