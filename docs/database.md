@@ -4,7 +4,7 @@
 
 The PostgreSQL model is intentionally focused on durable storage, traceability, deduplication, AI auditability, delivery idempotency, and future extensibility.
 
-PostgreSQL is the source of truth. n8n is an orchestration layer. Google Sheets remains only a lightweight journal contract target and is not treated as a primary datastore.
+PostgreSQL is the source of truth. n8n is an orchestration layer. Google Sheets is treated as a long-lived archive target, but not as a primary datastore.
 
 ## Current Tables
 
@@ -54,13 +54,34 @@ Why it exists:
 
 - prevents duplicate Telegram sends for the same opportunity/profile
 - keeps retry state outside transient workflow memory
-- stores durable send status, lock state, attempt counters, and payload snapshots
+- stores durable send status, lock state, attempt counters, payload snapshots, and the latest feedback summary during the working-memory lifetime
 
 ### `google_sheets_journal`
 
-Stores the lightweight journal contract for successful deliveries.
+Stores the durable Google Sheets archive-sync contract.
 
-Block 5 adds `notification_id` so one successful notification can map to one journal row idempotently.
+Block 6 expands this table with:
+
+- `archive_key`
+- `ai_recommendation`
+- `user_action`
+- `result`
+- `sync_status`
+- sync timestamps and error fields
+
+This table now survives the 60-day working-memory purge.
+
+### `feedback_action_catalog`
+
+Stores the supported user feedback actions and their lifecycle effects.
+
+### `user_feedback_history`
+
+Stores append-only user feedback events with an idempotency key.
+
+### `learning_feedback_dataset`
+
+Stores the future model-training dataset separately from `opportunities`.
 
 ### `source_run_logs`
 
@@ -84,6 +105,11 @@ Stores structured application-level and workflow-level operational events.
 - `notifications.user_id -> users.id`
 - `notifications.opportunity_id -> opportunities.id`
 - `notifications.user_intelligence_profile_id -> user_intelligence_profiles.id`
+- `user_feedback_history.user_id -> users.id`
+- `user_feedback_history.user_intelligence_profile_id -> user_intelligence_profiles.id`
+- `user_feedback_history.notification_id -> notifications.id`
+- `user_feedback_history.opportunity_id -> opportunities.id`
+- `learning_feedback_dataset.feedback_history_id -> user_feedback_history.id`
 - `google_sheets_journal.notification_id -> notifications.id`
 - `google_sheets_journal.opportunity_id -> opportunities.id`
 - `source_run_logs.source_id -> sources.id`
@@ -96,19 +122,21 @@ Opportunities, AI queue state, analysis snapshots, scores, delivery state, and t
 
 ### Core records and derived records are separated
 
-`opportunities` stores the canonical source-derived record. Queue state, AI analysis, scoring, notification state, and journaling are modeled as adjacent tables to reduce coupling and preserve history.
+`opportunities` stores the canonical source-derived record. Queue state, AI analysis, scoring, notification state, feedback history, learning history, and archive sync state are modeled as adjacent tables to reduce coupling and preserve history.
 
 ### User intelligence is separated from the generic profile
 
 `user_profiles` remains the broad human-facing profile layer and also holds delivery routing metadata. `user_intelligence_profiles` stays focused on AI decision input and scoring policy.
 
-### Delivery is idempotent
+### Delivery and feedback are idempotent
 
 Telegram delivery uses the existing `notifications` table as an outbox with a unique key for the user/profile/opportunity combination. This prevents repeated sends even if the workflow runs again.
 
-### AI queue state and delivery queue state are both durable
+Feedback events are idempotent through `user_feedback_history.idempotency_key`, which is derived from the real Telegram callback identity when available.
 
-`opportunity_analysis_jobs` and `notifications` keep retry and lock state in PostgreSQL so that workflow restarts do not lose operational state.
+### AI queue state, delivery queue state, and learning evidence are separated
+
+`opportunity_analysis_jobs` and `notifications` keep retry and lock state in PostgreSQL so that workflow restarts do not lose operational state, while `user_feedback_history`, `learning_feedback_dataset`, and `google_sheets_journal` preserve long-lived evidence beyond the 60-day working-memory retention window.
 
 ## Indexing Strategy
 
@@ -119,7 +147,8 @@ The schema adds indexes for:
 - current AI analysis and current score retrieval per profile
 - analysis queue claim and retry retrieval
 - notification delivery queue claim, lock recovery, and idempotency
-- journal row uniqueness per notification
+- Google Sheets archive row uniqueness per `archive_key`
+- feedback-history and learning-dataset lookups
 - source run telemetry lookups
 - system log filtering by source, severity, and time
 
@@ -149,7 +178,16 @@ The schema adds indexes for:
 - `delivery_mark_notification_failed(...)`
 - `delivery_record_notification_action(...)`
 
-These helpers keep Telegram eligibility, outbox state, retries, journal writes, and lightweight callback capture in PostgreSQL instead of in workflow-local logic.
+### Block 6 Feedback Helpers
+
+- `feedback_normalize_project_type(...)`
+- `feedback_extract_matched_technologies(...)`
+- `feedback_record_notification_action(...)`
+- `feedback_mark_google_sheet_archive_synced(...)`
+- `feedback_mark_google_sheet_archive_failed(...)`
+- `feedback_purge_expired_working_memory(...)`
+
+These helpers keep Telegram eligibility, outbox state, feedback capture, archive sync state, learning dataset assembly, and retention logic in PostgreSQL instead of in workflow-local logic.
 
 ## Migration Files
 
@@ -161,6 +199,7 @@ Current migrations:
 - `database/migrations/20260708153000__add_block3_collection_functions.sql`
 - `database/migrations/20260708170000__add_block4_ai_decision_engine.sql`
 - `database/migrations/20260708183000__add_block5_telegram_delivery_engine.sql`
+- `database/migrations/20260708203000__add_block6_feedback_learning_engine.sql`
 
 ## Validation Approach
 

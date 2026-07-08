@@ -2,65 +2,131 @@
 
 ## Product Summary
 
-AI Career Agent is intended to become a production-grade system for automating and augmenting career management workflows with AI, workflow orchestration, and structured data handling.
+AI Career Agent is a production-grade automation system that collects real career opportunities, evaluates them with AI, delivers only relevant matches to Telegram, captures user feedback, and preserves a durable dataset for future learning.
 
-Block 1 does not implement product features. It creates the technical foundation required to build them safely in later blocks.
+The system is intentionally delivered block by block so the architecture, persistence, and automation layers remain stable as business capability grows.
 
 ## Problem Statement
 
-Career-related workflows often become fragmented across chat tools, spreadsheets, notes, manual reminders, and disconnected automations. This creates poor traceability, low reuse, and limited scalability once the workflow grows beyond a personal setup.
+Career and project discovery workflows often fragment across:
 
-The project needs a foundation that can support reliable automation, structured persistence, controlled integrations, and future AI-assisted workflows without early architectural debt.
+- Telegram chats
+- spreadsheets
+- browser tabs
+- notes
+- manual reminders
+- disconnected automations
+
+This fragmentation makes it hard to:
+
+- keep one trusted source of truth
+- avoid duplicate opportunities
+- understand which recommendations are actually useful
+- build a future training dataset from real user outcomes
 
 ## Product Objectives
 
-- Centralize future career-agent capabilities in a maintainable repository.
-- Enable controlled collaboration between application code, automation workflows, and data assets.
-- Provide a path toward production operations, observability, and secure configuration handling.
-- Support future incremental delivery by development blocks.
+- Collect real opportunities from approved sources into one canonical PostgreSQL model.
+- Evaluate opportunities against editable user intelligence profiles.
+- Deliver only relevant opportunities to Telegram.
+- Capture real user actions in a structured, idempotent way.
+- Maintain Google Sheets as a long-lived archive without turning it into the operational database.
+- Build a durable learning dataset without retraining the AI yet.
 
-## Block 1 Scope
+## Current Implemented Scope
 
-Block 1 includes:
+### Block 1
 
-- repository inspection and initialization in the required local path
+- repository foundation
 - documentation baseline
-- architecture definition
-- directory layout
-- environment template
-- git hygiene rules
 - Docker Compose baseline
-- structure for documentation, configuration, database assets, SQL migrations, n8n workflows, scripts, tests, and logs
+- development and validation structure
 
-## Out Of Scope For Block 1
+### Block 2
 
-The following are explicitly excluded from implementation in Block 1:
+- V1 PostgreSQL schema
+- indexes, triggers, and verification SQL
 
-- opportunity discovery
-- AI analysis logic
-- Telegram bot implementation
-- PostgreSQL schema implementation
-- n8n workflow implementation
-- Opportunity Score logic
+### Block 3
 
-These items belong to subsequent blocks and are not implemented in this repository state.
+- opportunity collection from supported official sources
+- normalization to one canonical Opportunity model
+- deduplicated PostgreSQL persistence
+
+### Block 4
+
+- editable `user_intelligence_profiles`
+- OpenAI-backed AI Decision Engine
+- deterministic PostgreSQL-owned score persistence
+
+### Block 5
+
+- PostgreSQL-owned Telegram outbox
+- retry-safe opportunity delivery workflow
+- Telegram inline action transport
+
+### Block 6
+
+- idempotent Telegram feedback capture
+- feedback history in PostgreSQL
+- separate learning dataset in PostgreSQL
+- Google Sheets archive updates keyed by `archive_key`
+- automatic 60-day cleanup of transient working memory
+
+## Block 6 Scope
+
+Block 6 includes:
+
+- capturing supported user actions from Telegram
+- updating `notifications`
+- updating coarse `opportunities.status`
+- writing durable feedback history
+- writing a separate future-training dataset
+- upserting Google Sheets archive rows only for `apply_now` and `review_manually`
+- preserving long-lived evidence while deleting transient working memory after 60 days
+
+## Explicitly Out Of Scope
+
+The following remain outside the current repository state:
+
+- automatic AI retraining
+- changing the current Opportunity Score algorithm
+- backend API
+- Web UI
+- dashboards
+- new source connectors beyond the already accepted blocks
+
+## Supported User Actions
+
+The current feedback engine supports:
+
+- `applied`
+- `saved`
+- `later`
+- `not_interested`
+- `already_done`
+- `got_project`
+- `got_job`
+- `rejected`
+- `no_response`
 
 ## Non-Functional Requirements
 
-- Production-oriented repository structure
-- Clear separation of concerns
-- Secure secret handling through environment variables and external credential stores
-- Low operational ambiguity between code, workflow, and data ownership
-- Traceable changes through changelog and ADRs
-- Readiness for CI/CD, observability, and multi-environment expansion in future blocks
+- PostgreSQL remains the source of truth for operational state.
+- Google Sheets remains an archive, not the working database.
+- All user actions must be idempotent.
+- The architecture must support multiple users.
+- Long-lived learning evidence must survive working-memory cleanup.
+- Secrets must stay outside committed source code and workflow exports.
+- Every block must remain production-ready without mock data or temporary logic.
 
-## Success Criteria For Block 1
+## Success Criteria For The Current Repository State
 
-- The repository exists in `C:\codex\ai-career-agent`.
-- Git is connected to the existing GitHub repository.
-- The repository contains a coherent production-ready foundation.
-- Documentation explains purpose, structure, architecture, and next development steps.
-- The project can proceed to Block 2 without repository rework.
+- Opportunities can be collected, analyzed, delivered, and annotated by real user actions.
+- Telegram feedback updates PostgreSQL and the Google Sheets archive without duplicate rows.
+- `user_feedback_history` preserves append-only user interaction history.
+- `learning_feedback_dataset` preserves future-training evidence separately from `opportunities`.
+- Working-memory tables can be purged after 60 days without losing feedback or learning history.
 
 ## Key Delivery Artifacts
 
@@ -68,11 +134,10 @@ These items belong to subsequent blocks and are not implemented in this reposito
 - `PRD.md`
 - `ARCHITECTURE.md`
 - `CHANGELOG.md`
-- `.env.example`
-- `.gitignore`
-- `docker-compose.yml`
-- supporting directory structure and guidance files
-
-## Acceptance Boundary
-
-If a requirement would introduce business logic, real workflow implementation, database schema design, or integration behavior, it is outside Block 1 and must remain unimplemented at this stage.
+- `docs/database.md`
+- `docs/ai-decision-engine.md`
+- `docs/telegram-delivery-engine.md`
+- `docs/feedback-learning-engine.md`
+- `n8n/workflows/*.json`
+- `database/migrations/*.sql`
+- `scripts/validate-*.ps1`

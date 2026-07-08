@@ -20,15 +20,12 @@ The delivery workflow is responsible only for:
 - formatting a compact Telegram message
 - sending the message through the configured bot token
 - marking the outbox row as sent or failed
-- appending a lightweight entry to the Google Sheets journal contract table
+- exposing supported feedback actions through inline buttons
 
 ## Maintained Workflows
 
-- `n8n/workflows/send-opportunity-notifications.json`
-
-Prepared callback template:
-
 - `n8n/workflows/handle-opportunity-notification-actions.json`
+- `n8n/workflows/send-opportunity-notifications.json`
 
 ## PostgreSQL Contracts
 
@@ -68,7 +65,7 @@ The delivery target is stored in `user_profiles.profile_data` under:
   "telegram_delivery": {
     "chat_id": "<real-chat-id>",
     "enabled": true,
-    "bot_name": "Ri assistant"
+    "bot_name": "Ri Career Agent"
   }
 }
 ```
@@ -112,26 +109,27 @@ The always-safe inline button is:
 
 - `Открыть`
 
-Optional action buttons are prepared behind `TELEGRAM_INLINE_ACTIONS_ENABLED=true`:
+Supported action buttons behind `TELEGRAM_INLINE_ACTIONS_ENABLED=true`:
 
+- `Откликнулся`
 - `Сохранить`
-- `Не интересно`
 - `Позже`
+- `Не интересно`
+- `Уже выполнено`
+- `Получил проект`
+- `Получил работу`
+- `Отказ`
+- `Нет ответа`
 
-The callback workflow template is committed, but full feedback automation is intentionally deferred to the next block.
+The callback workflow is maintained as part of Block 6 and hands feedback ownership to PostgreSQL plus the Google Sheets archive contract.
 
 ## Google Sheets Journal
 
-Block 5 does not treat Google Sheets as a primary datastore.
+Telegram delivery does not write archive rows on send.
 
-On successful Telegram delivery, PostgreSQL appends a lightweight row to `google_sheets_journal` with:
+The archive is updated later by the feedback workflow and only for:
 
-- `date`
-- `source`
-- `opportunity_type`
-- `title`
-- `score`
-- `status`
-- `url`
+- `apply_now`
+- `review_manually`
 
-This keeps the journal contract up to date without introducing a direct Google Sheets dependency in the workflow.
+This keeps delivery transport separate from the long-lived archive lifecycle.

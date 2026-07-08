@@ -15,7 +15,8 @@ $verificationSqlFiles = @(
     (Join-Path $Root 'database\sql\verify_v1_schema.sql'),
     (Join-Path $Root 'database\sql\verify_block3_collection.sql'),
     (Join-Path $Root 'database\sql\verify_block4_decision_engine.sql'),
-    (Join-Path $Root 'database\sql\verify_block5_telegram_delivery.sql')
+    (Join-Path $Root 'database\sql\verify_block5_telegram_delivery.sql'),
+    (Join-Path $Root 'database\sql\verify_block6_feedback_learning.sql')
 )
 
 if (-not (Test-Path -LiteralPath $migrationDir -PathType Container)) {
@@ -49,7 +50,10 @@ $requiredTables = @(
     'source_run_logs',
     'system_logs',
     'user_intelligence_profiles',
-    'opportunity_analysis_jobs'
+    'opportunity_analysis_jobs',
+    'feedback_action_catalog',
+    'user_feedback_history',
+    'learning_feedback_dataset'
 )
 
 $requiredFunctions = @(
@@ -67,7 +71,13 @@ $requiredFunctions = @(
     'delivery_claim_notification_batch',
     'delivery_mark_notification_sent',
     'delivery_mark_notification_failed',
-    'delivery_record_notification_action'
+    'delivery_record_notification_action',
+    'feedback_normalize_project_type',
+    'feedback_extract_matched_technologies',
+    'feedback_record_notification_action',
+    'feedback_mark_google_sheet_archive_synced',
+    'feedback_mark_google_sheet_archive_failed',
+    'feedback_purge_expired_working_memory'
 )
 
 $fullMigrationText = ($migrationFiles | ForEach-Object { Get-Content -Raw $_.FullName }) -join "`n"

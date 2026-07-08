@@ -10,10 +10,8 @@ Current maintained workflow:
 - `workflows/collect-opportunities.json`
 - `workflows/analyze-opportunities.json`
 - `workflows/send-opportunity-notifications.json`
-
-Prepared workflow template:
-
 - `workflows/handle-opportunity-notification-actions.json`
+- `workflows/maintain-working-memory-retention.json`
 
 Guidelines:
 

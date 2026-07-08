@@ -11,7 +11,7 @@ The system is responsible for:
 - delivering messages to Telegram
 - updating delivery status after success or failure
 - keeping retry state in PostgreSQL
-- appending a lightweight Google Sheets journal contract row after successful delivery
+- presenting the supported feedback actions through Telegram inline buttons
 
 Block 5 does not implement:
 
@@ -77,7 +77,7 @@ Execution pattern:
 3. format a concise Telegram message
 4. send the message through Telegram Bot API
 5. mark the notification as `sent` or `retry` / `failed`
-6. write a lightweight journal row into `google_sheets_journal` after successful delivery
+6. leave Google Sheets archive ownership to the Block 6 feedback workflow
 
 ## Eligibility Rules
 
@@ -130,33 +130,34 @@ Always-safe button:
 
 - `Открыть`
 
-Optional buttons behind `TELEGRAM_INLINE_ACTIONS_ENABLED=true`:
+Supported buttons behind `TELEGRAM_INLINE_ACTIONS_ENABLED=true`:
 
+- `Откликнулся`
 - `Сохранить`
-- `Не интересно`
 - `Позже`
+- `Не интересно`
+- `Уже выполнено`
+- `Получил проект`
+- `Получил работу`
+- `Отказ`
+- `Нет ответа`
 
-Prepared callback workflow template:
+Maintained callback workflow:
 
 - `n8n/workflows/handle-opportunity-notification-actions.json`
 
-This template only records the raw action into notification payload and logs it. It does not yet change scoring, ranking, or future AI behavior.
+Block 6 owns the downstream behavior of these actions in PostgreSQL and Google Sheets.
 
 ## Google Sheets Journal
 
-Block 5 writes a lightweight row into `google_sheets_journal` on successful Telegram delivery.
+Block 5 no longer writes a Google Sheets archive row at send time.
 
-Stored fields:
+From Block 6 onward, the Google Sheets archive is updated only after a real user action and only for:
 
-- `date`
-- `source`
-- `opportunity_type`
-- `title`
-- `score`
-- `status`
-- `url`
+- `apply_now`
+- `review_manually`
 
-No direct Google Sheets API delivery is introduced in this block. The table remains the journal contract and future export source.
+This keeps delivery transport separated from user-feedback archiving.
 
 ## Validation
 

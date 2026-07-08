@@ -1,0 +1,16 @@
+{
+  "sheetName": "Feedback Archive",
+  "matchingColumn": "archive_key",
+  "columns": [
+    "archive_key",
+    "date",
+    "source",
+    "opportunity_type",
+    "title",
+    "score",
+    "ai_recommendation",
+    "user_action",
+    "result",
+    "url"
+  ]
+}

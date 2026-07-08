@@ -27,3 +27,8 @@ The format is based on Keep a Changelog and the project follows semantic version
 - Block 5 Telegram outbox delivery helpers for target configuration, queue sync, claiming, sent/failure handling, and action capture
 - `Send Opportunity Notifications` workflow and callback workflow template for inline Telegram actions
 - Block 5 Telegram delivery documentation, runbooks, ADR, and workflow validation script
+- Block 6 feedback action catalog, append-only feedback history, separate learning dataset, and Google Sheets archive-sync contract
+- Block 6 SQL helper functions for feedback capture, Google Sheets sync tracking, and 60-day working-memory retention
+- expanded `Handle Opportunity Notification Actions` workflow with PostgreSQL feedback processing and Google Sheets upsert by `archive_key`
+- `Maintain Working Memory Retention` workflow for automated cleanup of transient PostgreSQL working memory
+- Block 6 documentation, ADR, runbooks, sheet-column contract, and workflow validation script

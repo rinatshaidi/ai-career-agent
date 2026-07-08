@@ -27,7 +27,7 @@ FROM delivery_upsert_telegram_target(
     p_user_id := '<real-user-uuid>'::uuid,
     p_chat_id := '<real-telegram-chat-id>',
     p_delivery_enabled := true,
-    p_bot_name := 'Ri assistant'
+    p_bot_name := 'Ri Career Agent'
 );
 ```
 

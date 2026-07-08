@@ -9,6 +9,7 @@
 - Incremental scalability without forced rewrites
 - Provider-specific AI execution isolated from scoring and persistence rules
 - Delivery transport isolated from AI decision state
+- Learning evidence isolated from short-lived working memory
 
 ## Chosen Repository Model
 
@@ -25,7 +26,7 @@ Reserved under `apps/`.
 - `apps/api/` is intended for the future synchronous application boundary.
 - `apps/worker/` is intended for future asynchronous workloads.
 
-No backend API or worker business logic is introduced in Block 5.
+No backend API or worker business logic is introduced in Block 6.
 
 ### 2. Shared Contracts Layer
 
@@ -48,7 +49,10 @@ Current responsibility split:
 - `opportunity_ai_analysis` stores append-only per-profile AI analysis snapshots
 - `opportunity_scores` stores normalized per-profile score history by score type
 - `notifications` stores the delivery outbox and notification execution state
-- `google_sheets_journal` stores the lightweight journal contract for successful deliveries
+- `feedback_action_catalog` stores the supported feedback action dictionary
+- `user_feedback_history` stores append-only user interaction history
+- `learning_feedback_dataset` stores the future AI-training dataset in a separate long-lived model
+- `google_sheets_journal` stores the durable Google Sheets archive-sync contract
 - `source_run_logs` and `system_logs` store structured operational telemetry
 
 ### 4. Automation Layer
@@ -65,10 +69,8 @@ Current maintained workflows:
 - `Collect Opportunities`
 - `Analyze Opportunities`
 - `Send Opportunity Notifications`
-
-Prepared callback template:
-
 - `Handle Opportunity Notification Actions`
+- `Maintain Working Memory Retention`
 
 ### 5. Configuration Layer
 
@@ -93,6 +95,7 @@ The current delivery implementation intentionally stays inside PostgreSQL plus n
 The root `docker-compose.yml` remains a safe local-stack baseline, not a production deployment manifest.
 
 It exposes the environment variables required for collection, AI analysis, and Telegram delivery when a local `n8n` stack is intentionally started.
+It exposes the environment variables required for collection, AI analysis, Telegram delivery, Google Sheets archiving, and working-memory retention when a local `n8n` stack is intentionally started.
 
 ## Data And Ownership Boundaries
 
@@ -120,8 +123,15 @@ For Telegram delivery:
 - eligibility remains owned by current PostgreSQL AI analysis state
 - `notifications` is the outbox and retry owner
 - the workflow only syncs, claims, sends, and reports status
-- successful sends append a lightweight row to `google_sheets_journal`
-- inline action capture is prepared but deliberately isolated from scoring and learning logic
+- inline buttons emit canonical feedback actions
+
+For feedback and learning:
+
+- `user_feedback_history` is the append-only user history
+- `learning_feedback_dataset` is the durable future-training dataset
+- `google_sheets_journal` is updated only for `apply_now` and `review_manually`
+- Google Sheets upserts use a stable `archive_key` instead of append-only behavior
+- working-memory retention deletes transient runtime state after 60 days but keeps feedback and learning evidence
 
 ## Scalability Path
 
@@ -135,7 +145,7 @@ The current structure is ready to support the following later without repository
 - structured observability and runbooks
 - application test suites by layer
 - future API and worker services
-- feedback-learning pipelines on top of recorded Telegram actions
+- feedback-learning pipelines on top of already-curated user history and training-ready datasets
 
 ## Current Scope Boundary
 
@@ -146,12 +156,15 @@ The architecture currently includes:
 - unified Opportunity normalization
 - OpenAI-backed AI decisioning with per-profile persistence and deterministic final scoring
 - Telegram delivery through a PostgreSQL-owned outbox
-- lightweight Google Sheets journal contract writes after successful delivery
+- idempotent feedback capture through Telegram callback actions
+- separate long-lived feedback and learning tables
+- Google Sheets archive updates keyed by `archive_key`
+- automatic 60-day working-memory retention
 
 The architecture intentionally still does not implement:
 
-- direct Google Sheets API export
+- automatic AI retraining
 - backend APIs
 - web interface
 - worker services outside n8n
-- full feedback learning or adaptive re-ranking from Telegram actions
+- adaptive re-ranking or changing the current AI scoring algorithm

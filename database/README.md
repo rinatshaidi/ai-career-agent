@@ -28,3 +28,5 @@ Block 3 adds ingestion helper functions and workflow support SQL. Verification S
 Block 4 adds AI decision engine tables, per-profile analysis enhancements, and workflow support SQL. Verification SQL for the AI decision engine lives in `database/sql/verify_block4_decision_engine.sql`.
 
 Block 5 adds Telegram delivery outbox helpers, callback-action capture support, and journal-contract support SQL. Verification SQL for the delivery engine lives in `database/sql/verify_block5_telegram_delivery.sql`.
+
+Block 6 adds feedback history tables, a separate learning dataset, Google Sheets archive-sync support, and 60-day working-memory retention SQL. Verification SQL for the feedback engine lives in `database/sql/verify_block6_feedback_learning.sql`.
