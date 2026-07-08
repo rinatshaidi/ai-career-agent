@@ -200,6 +200,7 @@ Current migrations:
 - `database/migrations/20260708170000__add_block4_ai_decision_engine.sql`
 - `database/migrations/20260708183000__add_block5_telegram_delivery_engine.sql`
 - `database/migrations/20260708203000__add_block6_feedback_learning_engine.sql`
+- `database/migrations/20260708220000__fix_block65_production_integration_gaps.sql`
 
 ## Validation Approach
 
@@ -218,3 +219,5 @@ powershell -ExecutionPolicy Bypass -File .\scripts\validate-migrations.ps1 -Mode
 ```
 
 This starts a temporary PostgreSQL container, applies all migrations in order, runs every verification SQL file under `database/sql/`, and removes the container afterward unless told otherwise.
+
+The Block 6.5 corrective migration intentionally preserves immutable migration history: the original Block 5 migration remains unchanged, while the later migration overrides the effective Telegram fallback name to `Ri Career Agent` and updates existing stored profile metadata where the earlier fallback had already been persisted.

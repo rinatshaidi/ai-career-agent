@@ -7,7 +7,7 @@ This contract describes the production-ready interface between the n8n workflow 
 The workflow does not own business logic. It is responsible for:
 
 - claiming analysis jobs from PostgreSQL
-- building an OpenAI request for each opportunity
+- building an OpenAI Chat Completions-compatible request for each opportunity
 - parsing the structured result
 - sending the result back to PostgreSQL helper functions
 
@@ -72,4 +72,10 @@ Required fields:
 
 The LLM produces the component scores and narrative reasoning.
 
-PostgreSQL calculates the final `opportunity_score` using weighted logic stored in `user_intelligence_profiles.scoring_policy`. This keeps the score formula outside the LLM and makes provider replacement possible without rewriting business rules.
+PostgreSQL calculates the final `opportunity_score` using weighted logic stored in `user_intelligence_profiles.scoring_policy`. This keeps the score formula outside the LLM and keeps business rules provider-agnostic.
+
+Current integration boundary:
+
+- `AI_DECISION_PROVIDER` is persisted as provider metadata and lock context
+- the committed HTTP adapter targets OpenAI-compatible chat completions APIs
+- a non-compatible provider still requires a workflow adapter change, but not a PostgreSQL business-logic change

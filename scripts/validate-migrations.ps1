@@ -16,7 +16,8 @@ $verificationSqlFiles = @(
     (Join-Path $Root 'database\sql\verify_block3_collection.sql'),
     (Join-Path $Root 'database\sql\verify_block4_decision_engine.sql'),
     (Join-Path $Root 'database\sql\verify_block5_telegram_delivery.sql'),
-    (Join-Path $Root 'database\sql\verify_block6_feedback_learning.sql')
+    (Join-Path $Root 'database\sql\verify_block6_feedback_learning.sql'),
+    (Join-Path $Root 'database\sql\verify_block65_production_integration.sql')
 )
 
 if (-not (Test-Path -LiteralPath $migrationDir -PathType Container)) {

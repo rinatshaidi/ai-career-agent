@@ -94,7 +94,6 @@ The current delivery implementation intentionally stays inside PostgreSQL plus n
 
 The root `docker-compose.yml` remains a safe local-stack baseline, not a production deployment manifest.
 
-It exposes the environment variables required for collection, AI analysis, and Telegram delivery when a local `n8n` stack is intentionally started.
 It exposes the environment variables required for collection, AI analysis, Telegram delivery, Google Sheets archiving, and working-memory retention when a local `n8n` stack is intentionally started.
 
 ## Data And Ownership Boundaries
@@ -116,6 +115,7 @@ For AI decisioning:
 - editable user preference state lives in `user_intelligence_profiles`
 - claim, lock, retry, and replay state live in `opportunity_analysis_jobs`
 - provider-specific prompt and HTTP execution live in the workflow
+- the committed adapter is OpenAI-compatible, while scoring and persistence stay provider-agnostic
 - final Opportunity Score and action thresholds live in PostgreSQL helper functions
 
 For Telegram delivery:

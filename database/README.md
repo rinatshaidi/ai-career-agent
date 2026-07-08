@@ -30,3 +30,5 @@ Block 4 adds AI decision engine tables, per-profile analysis enhancements, and w
 Block 5 adds Telegram delivery outbox helpers, callback-action capture support, and journal-contract support SQL. Verification SQL for the delivery engine lives in `database/sql/verify_block5_telegram_delivery.sql`.
 
 Block 6 adds feedback history tables, a separate learning dataset, Google Sheets archive-sync support, and 60-day working-memory retention SQL. Verification SQL for the feedback engine lives in `database/sql/verify_block6_feedback_learning.sql`.
+
+Block 6.5 adds a production-integration corrective migration that updates the Telegram bot fallback from `Ri assistant` to `Ri Career Agent` in the effective delivery helper functions and includes `database/sql/verify_block65_production_integration.sql` to assert the final runtime definitions.

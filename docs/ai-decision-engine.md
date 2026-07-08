@@ -105,7 +105,7 @@ These weights and thresholds can be overridden per user through `user_intelligen
 
 ## Replaceability Of The LLM Provider
 
-The OpenAI-specific concern is isolated to the workflow node that performs the HTTP call.
+The business boundary is provider-agnostic, but the currently committed workflow adapter is OpenAI Chat Completions-compatible.
 
 Business logic is intentionally provider-agnostic because:
 
@@ -115,6 +115,11 @@ Business logic is intentionally provider-agnostic because:
 - the workflow only has to produce the agreed JSON contract
 
 A future provider replacement therefore changes the provider call and prompt layer, not the scoring or persistence layer.
+
+Important integration note:
+
+- OpenAI-compatible providers can usually reuse the current HTTP adapter with configuration changes
+- non-compatible providers still require a workflow adapter change, even though the business logic and persistence model stay unchanged
 
 ## Data Persisted By Block 4
 

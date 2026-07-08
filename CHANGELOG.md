@@ -32,3 +32,9 @@ The format is based on Keep a Changelog and the project follows semantic version
 - expanded `Handle Opportunity Notification Actions` workflow with PostgreSQL feedback processing and Google Sheets upsert by `archive_key`
 - `Maintain Working Memory Retention` workflow for automated cleanup of transient PostgreSQL working memory
 - Block 6 documentation, ADR, runbooks, sheet-column contract, and workflow validation script
+- Block 6.5 production-integration corrective migration and verification SQL for the final Telegram bot fallback contract
+
+### Changed
+
+- clarified that the committed AI workflow adapter is OpenAI Chat Completions-compatible while PostgreSQL scoring and persistence remain provider-agnostic
+- aligned architecture and database documentation with the Block 6.5 production-integration review findings
