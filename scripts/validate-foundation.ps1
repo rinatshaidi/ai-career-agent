@@ -10,14 +10,20 @@ $requiredFiles = @(
     '.env.example',
     '.gitignore',
     'docker-compose.yml',
+    'docs\database.md',
     'apps\README.md',
     'packages\README.md',
     'docs\README.md',
     'docs\adr\0001-foundation-architecture.md',
     'config\README.md',
     'database\README.md',
+    'database\migrations\20260708141000__create_v1_core_tables.sql',
+    'database\migrations\20260708141100__create_v1_indexes.sql',
+    'database\migrations\20260708141200__create_v1_updated_at_triggers.sql',
+    'database\sql\verify_v1_schema.sql',
     'n8n\README.md',
     'scripts\README.md',
+    'scripts\validate-migrations.ps1',
     'tests\README.md'
 )
 

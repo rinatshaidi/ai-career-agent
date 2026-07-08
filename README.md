@@ -65,20 +65,28 @@ This separation is intentional. It reduces coupling between workflows, data, and
 
 1. Clone the repository into `C:\codex\ai-career-agent`.
 2. Copy `.env.example` to `.env` and fill in environment-specific values.
-3. Review `docker-compose.yml`. In Block 1 it is prepared but not intended to be started yet.
+3. Review `docker-compose.yml`. Local infrastructure remains optional and is not required for migration authoring.
 4. Validate the repository structure:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\validate-foundation.ps1
 ```
 
-5. Continue development strictly by blocks and keep new decisions documented in `docs/adr/`.
+5. Validate database migrations without touching production infrastructure:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\validate-migrations.ps1 -Mode static
+```
+
+6. Continue development strictly by blocks and keep new decisions documented in `docs/adr/`.
 
 ## Development Process
 
 - Block 1 builds the foundation only.
-- Business logic, PostgreSQL schema design, n8n workflows, AI analysis, opportunity scoring, and Telegram bot implementation belong to later blocks.
+- Block 2 adds the V1 PostgreSQL schema, SQL migrations, and migration validation assets.
+- Business logic, n8n workflows, data collection, AI execution, and Telegram bot implementation belong to later blocks.
 - New SQL changes should go only into `database/migrations/`.
+- Schema verification SQL belongs in `database/sql/`.
 - Exported n8n workflows should be versioned in `n8n/workflows/` or `n8n/exports/`.
 - Operational or validation automation belongs in `scripts/`.
 - Test assets should be organized by test layer inside `tests/`.

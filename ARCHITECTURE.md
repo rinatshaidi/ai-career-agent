@@ -34,12 +34,21 @@ This layer is prepared for schemas, shared DTOs, event contracts, validation log
 
 ### 3. Data Layer
 
-Reserved under `database/`.
-
 - `database/migrations/` is the only place for future schema evolution scripts.
-- `database/sql/` is reserved for curated SQL assets such as views, maintenance scripts, or operational queries.
+- `database/sql/` stores verification SQL, maintenance queries, or curated operational statements that are not schema migrations.
 
-The PostgreSQL schema itself is intentionally not implemented in Block 1.
+Block 2 introduces the V1 PostgreSQL schema with the following responsibility split:
+
+- `users` and `user_profiles` store user identity and career-context profile state
+- `sources` stores the controlled catalog of ingestion and discovery sources
+- `opportunities` stores the canonical opportunity record and deduplication metadata
+- `opportunity_ai_analysis` stores append-only qualitative AI analysis snapshots
+- `opportunity_scores` stores normalized score history by score type
+- `notifications` stores future outbound notification state
+- `google_sheets_journal` stores the lightweight export contract for future Google Sheets journaling
+- `source_run_logs` and `system_logs` store structured operational telemetry
+
+The data layer intentionally separates canonical records from derived records. Opportunities remain the central source-derived entity, while analysis, scoring, notifications, and journaling are modeled in adjacent tables to preserve history and reduce coupling.
 
 ### 4. Automation Layer
 

@@ -1,12 +1,24 @@
 # Database
 
-This directory is the future home of all PostgreSQL-related assets that belong in source control.
+This directory stores PostgreSQL-related assets that belong in source control.
 
-- `migrations/` is reserved for ordered schema changes.
-- `sql/` is reserved for curated SQL assets such as utility queries, database maintenance scripts, and verified operational statements.
+- `migrations/` stores ordered schema changes.
+- `sql/` stores curated SQL assets such as verification queries, utility queries, or operational statements that are not migration files.
 
-Block 1 intentionally does not define a schema. When migrations begin in later blocks, use an ordered naming convention such as:
+Block 2 introduces the initial V1 schema. Migration files follow an ordered timestamp-based naming convention:
 
 ```text
 YYYYMMDDHHMMSS__short_description.sql
+```
+
+To validate migrations without touching production infrastructure:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\validate-migrations.ps1 -Mode static
+```
+
+If Docker CLI is available locally, you can also validate against a disposable PostgreSQL container:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\validate-migrations.ps1 -Mode docker
 ```

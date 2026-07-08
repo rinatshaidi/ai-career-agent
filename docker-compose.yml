@@ -21,7 +21,6 @@ services:
       - "${POSTGRES_LOCAL_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./database/sql:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ai_career_agent} -d ${POSTGRES_DB:-ai_career_agent}"]
       interval: 10s
