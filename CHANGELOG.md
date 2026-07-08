@@ -20,3 +20,7 @@ The format is based on Keep a Changelog and the project follows semantic version
 - Block 3 collection helper functions for source registration, opportunity upsert, and batch ingestion logging
 - `Collect Opportunities` workflow with RSS and HeadHunter connector branches
 - source catalog contract and workflow validation script
+- Block 4 `user_intelligence_profiles` and `opportunity_analysis_jobs` schema for editable AI preferences and durable decision queueing
+- Block 4 SQL helper functions for AI profile upsert, queue claiming, score calculation, analysis persistence, and failure handling
+- `Analyze Opportunities` workflow with OpenAI structured JSON analysis and PostgreSQL-backed retry handling
+- Block 4 documentation, ADR, runbooks, and workflow validation script

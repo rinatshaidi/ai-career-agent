@@ -1,0 +1,308 @@
+{
+  "name": "Analyze Opportunities",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "f3a86ba2-1c46-45db-95ec-80cd633a6e9c",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        200,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "9057dcb8-c9d7-4b83-a051-dbc6d5747409",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const first = $input.all()[0]?.json ?? {};\nconst triggerMode = Object.keys(first).length > 0 ? 'schedule' : 'manual';\nconst promptVersion = $env.AI_DECISION_PROMPT_VERSION || 'block4-v1';\nconst modelName = $env.AI_DECISION_MODEL || 'gpt-5.5';\nconst providerName = ($env.AI_DECISION_PROVIDER || 'openai').toLowerCase();\nconst batchSize = Number($env.AI_DECISION_BATCH_SIZE || 10);\nconst retryDelayMinutes = Number($env.AI_DECISION_RETRY_DELAY_MINUTES || 30);\nconst startedAt = new Date().toISOString();\nreturn [{\n  json: {\n    workflow_name: 'Analyze Opportunities',\n    triggered_by: triggerMode,\n    started_at_utc: startedAt,\n    prompt_version: promptVersion,\n    model_name: modelName,\n    provider_name: providerName,\n    batch_size: Number.isFinite(batchSize) && batchSize > 0 ? batchSize : 10,\n    retry_delay_minutes: Number.isFinite(retryDelayMinutes) && retryDelayMinutes > 0 ? retryDelayMinutes : 30,\n    profile_slug: $env.AI_DECISION_PROFILE_SLUG || '',\n    lock_token: `${providerName}:${promptVersion}:${startedAt}`,\n  },\n}];"
+      },
+      "id": "84c77678-e4ef-4c43-a8e0-2a8b44bf8571",
+      "name": "Init Decision Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT *\nFROM decision_claim_analysis_batch(\n  NULLIF($1::text, ''),\n  COALESCE(NULLIF($2::text, '')::integer, 10),\n  NULLIF($3::text, '')\n);",
+        "options": {
+          "queryReplacement": [
+            "={{ $json.profile_slug }}",
+            "={{ String($json.batch_size) }}",
+            "={{ $json.lock_token }}"
+          ]
+        }
+      },
+      "id": "bb56459f-7f24-42e7-b7c2-3e17eb548ee9",
+      "name": "Claim Analysis Batch",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        760,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const context = $('Init Decision Context').first().json;\nconst parseJson = (value) => {\n  if (value && typeof value === 'object') {\n    return value;\n  }\n  if (typeof value === 'string' && value.trim()) {\n    return JSON.parse(value);\n  }\n  return {};\n};\nconst opportunity = parseJson($json.opportunity_payload);\nconst profile = parseJson($json.profile_payload);\nconst outputSchema = {\n  type: 'object',\n  additionalProperties: false,\n  required: [\n    'summary',\n    'is_recommended',\n    'why_fit',\n    'why_not_fit',\n    'risks',\n    'fit_score',\n    'probability_to_win_score',\n    'difficulty_score',\n    'income_potential_score',\n    'urgency_score',\n    'skills_match_score',\n    'decision_confidence_score'\n  ],\n  properties: {\n    summary: { type: 'string' },\n    is_recommended: { type: 'boolean' },\n    why_fit: { type: 'array', items: { type: 'string' }, maxItems: 5 },\n    why_not_fit: { type: 'array', items: { type: 'string' }, maxItems: 5 },\n    risks: { type: 'array', items: { type: 'string' }, maxItems: 5 },\n    fit_score: { type: 'number', minimum: 0, maximum: 100 },\n    probability_to_win_score: { type: 'number', minimum: 0, maximum: 100 },\n    difficulty_score: { type: 'number', minimum: 0, maximum: 100 },\n    income_potential_score: { type: 'number', minimum: 0, maximum: 100 },\n    urgency_score: { type: 'number', minimum: 0, maximum: 100 },\n    skills_match_score: { type: 'number', minimum: 0, maximum: 100 },\n    decision_confidence_score: { type: 'number', minimum: 0, maximum: 100 }\n  }\n};\nconst systemPrompt = [\n  'You are the AI Decision Engine for AI Career Agent.',\n  'Analyze one opportunity against one user intelligence profile.',\n  'Use only the provided opportunity data and profile context.',\n  'Return strict JSON that matches the supplied schema.',\n  'Scoring rules:',\n  '- 0 means worst possible alignment or signal.',\n  '- 100 means best possible alignment or signal.',\n  '- High difficulty means harder execution.',\n  '- High probability_to_win means the user has a strong chance to secure the opportunity.',\n  '- High income_potential should reflect the likely business value for this specific user.',\n  '- If evidence is missing, stay conservative and reflect uncertainty in decision_confidence_score and the narrative arrays.',\n  'Do not add keys outside the schema.'\n].join('\\n');\nconst userPrompt = JSON.stringify({ opportunity, user_intelligence_profile: profile }, null, 2);\nconst inputSnapshot = {\n  workflow_name: context.workflow_name,\n  prompt_version: context.prompt_version,\n  provider_name: context.provider_name,\n  model_name: context.model_name,\n  opportunity,\n  user_intelligence_profile: profile,\n};\nreturn [{\n  json: {\n    job_id: $json.job_id,\n    opportunity_id: $json.opportunity_id,\n    user_intelligence_profile_id: $json.user_intelligence_profile_id,\n    profile_slug: $json.profile_slug,\n    provider_name: context.provider_name,\n    model_name: context.model_name,\n    prompt_version: context.prompt_version,\n    retry_delay_minutes: context.retry_delay_minutes,\n    input_snapshot: inputSnapshot,\n    openai_request: {\n      model: context.model_name,\n      temperature: 0.2,\n      messages: [\n        { role: 'system', content: systemPrompt },\n        { role: 'user', content: userPrompt }\n      ],\n      response_format: {\n        type: 'json_schema',\n        json_schema: {\n          name: 'opportunity_decision',\n          strict: true,\n          schema: outputSchema\n        }\n      }\n    }\n  }\n}];"
+      },
+      "id": "7e947f70-7f89-421a-a2a5-92f58cc99331",
+      "name": "Build OpenAI Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ (($env.OPENAI_API_BASE_URL || 'https://api.openai.com/v1').replace(/\\/$/, '')) + '/chat/completions' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.OPENAI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.openai_request }}",
+        "options": {
+          "timeout": "={{ Number($env.OPENAI_REQUEST_TIMEOUT_MS || 60000) }}"
+        }
+      },
+      "id": "ce18b402-ef7d-4e0b-b840-2b925e7ad5a8",
+      "name": "OpenAI | Analyze Opportunity",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        260
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const source = $('Build OpenAI Request').item.json;\nconst payload = $json ?? {};\nconst parseJsonCandidate = (value) => {\n  if (!value) {\n    return null;\n  }\n  if (typeof value === 'object') {\n    return value;\n  }\n  if (typeof value !== 'string') {\n    return null;\n  }\n  const trimmed = value.trim();\n  if (!trimmed) {\n    return null;\n  }\n  try {\n    return JSON.parse(trimmed);\n  } catch (error) {\n    const start = trimmed.indexOf('{');\n    const end = trimmed.lastIndexOf('}');\n    if (start !== -1 && end !== -1 && end > start) {\n      try {\n        return JSON.parse(trimmed.slice(start, end + 1));\n      } catch (nestedError) {\n        return null;\n      }\n    }\n  }\n  return null;\n};\nconst collectTextCandidates = (value, sink) => {\n  if (!value) {\n    return;\n  }\n  if (typeof value === 'string') {\n    sink.push(value);\n    return;\n  }\n  if (Array.isArray(value)) {\n    for (const item of value) {\n      collectTextCandidates(item, sink);\n    }\n    return;\n  }\n  if (typeof value === 'object') {\n    if (typeof value.text === 'string') {\n      sink.push(value.text);\n    }\n    if (typeof value.content === 'string') {\n      sink.push(value.content);\n    }\n    if (Array.isArray(value.content)) {\n      collectTextCandidates(value.content, sink);\n    }\n    if (Array.isArray(value.output)) {\n      collectTextCandidates(value.output, sink);\n    }\n  }\n};\nif (payload.error) {\n  return [{\n    json: {\n      ...source,\n      has_error: true,\n      error_message: payload.error.message || 'OpenAI request failed.',\n      error_details: {\n        error: payload.error,\n      },\n      llm_response_id: payload.id || null,\n    },\n  }];\n}\nconst candidates = [];\ncollectTextCandidates(payload.output_text, candidates);\ncollectTextCandidates(payload.choices?.[0]?.message?.content, candidates);\ncollectTextCandidates(payload.output, candidates);\nconst parsed = candidates.map(parseJsonCandidate).find(Boolean) || parseJsonCandidate(payload.choices?.[0]?.message?.parsed);\nif (!parsed) {\n  return [{\n    json: {\n      ...source,\n      has_error: true,\n      error_message: 'OpenAI response did not contain a valid JSON decision payload.',\n      error_details: {\n        response_id: payload.id || null,\n        response_preview: JSON.stringify(payload).slice(0, 4000),\n      },\n      llm_response_id: payload.id || null,\n    },\n  }];\n}\nreturn [{\n  json: {\n    ...source,\n    has_error: false,\n    analysis_json: parsed,\n    llm_response_id: payload.id || null,\n    model_name: payload.model || source.model_name,\n  },\n}];"
+      },
+      "id": "ad128d9c-f0f8-4a50-8f95-0b8723c0dca7",
+      "name": "Parse OpenAI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.has_error }}",
+              "operation": "true"
+            }
+          ]
+        }
+      },
+      "id": "672b7d7f-cfb4-4d60-a7f4-9042416b895c",
+      "name": "Analysis Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1880,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT *\nFROM decision_mark_ai_analysis_failed(\n  $1::uuid,\n  $2::text,\n  COALESCE(NULLIF($3::text, ''), '{}')::jsonb,\n  COALESCE(NULLIF($4::text, '')::integer, 30),\n  5\n);",
+        "options": {
+          "queryReplacement": [
+            "={{ $json.job_id }}",
+            "={{ $json.error_message }}",
+            "={{ $json.error_details ? JSON.stringify($json.error_details) : '{}' }}",
+            "={{ String($json.retry_delay_minutes || 30) }}"
+          ]
+        }
+      },
+      "id": "ebc3f6a9-fd64-432c-a71f-24089e5941b6",
+      "name": "Mark Analysis Failed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2160,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT *\nFROM decision_record_ai_analysis(\n  $1::uuid,\n  $2::jsonb,\n  $3::text,\n  $4::text,\n  $5::text,\n  NULLIF($6::text, ''),\n  $7::jsonb\n);",
+        "options": {
+          "queryReplacement": [
+            "={{ $json.job_id }}",
+            "={{ JSON.stringify($json.analysis_json) }}",
+            "={{ $json.model_name }}",
+            "={{ $json.provider_name }}",
+            "={{ $json.prompt_version }}",
+            "={{ $json.llm_response_id || '' }}",
+            "={{ JSON.stringify($json.input_snapshot) }}"
+          ]
+        }
+      },
+      "id": "08c1c583-fdc5-4d70-b565-0d790bd4f34b",
+      "name": "Persist AI Analysis",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2160,
+        380
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Init Decision Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Init Decision Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Init Decision Context": {
+      "main": [
+        [
+          {
+            "node": "Claim Analysis Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Analysis Batch": {
+      "main": [
+        [
+          {
+            "node": "Build OpenAI Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build OpenAI Request": {
+      "main": [
+        [
+          {
+            "node": "OpenAI | Analyze Opportunity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI | Analyze Opportunity": {
+      "main": [
+        [
+          {
+            "node": "Parse OpenAI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse OpenAI Response": {
+      "main": [
+        [
+          {
+            "node": "Analysis Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analysis Failed?": {
+      "main": [
+        [
+          {
+            "node": "Mark Analysis Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Persist AI Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Moscow",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true
+  },
+  "active": false,
+  "meta": null
+}

@@ -13,7 +13,8 @@ param(
 $migrationDir = Join-Path $Root 'database\migrations'
 $verificationSqlFiles = @(
     (Join-Path $Root 'database\sql\verify_v1_schema.sql'),
-    (Join-Path $Root 'database\sql\verify_block3_collection.sql')
+    (Join-Path $Root 'database\sql\verify_block3_collection.sql'),
+    (Join-Path $Root 'database\sql\verify_block4_decision_engine.sql')
 )
 
 if (-not (Test-Path -LiteralPath $migrationDir -PathType Container)) {
@@ -45,13 +46,21 @@ $requiredTables = @(
     'notifications',
     'google_sheets_journal',
     'source_run_logs',
-    'system_logs'
+    'system_logs',
+    'user_intelligence_profiles',
+    'opportunity_analysis_jobs'
 )
 
 $requiredFunctions = @(
     'collection_ensure_source',
     'collection_upsert_opportunity',
-    'collection_ingest_source_batch'
+    'collection_ingest_source_batch',
+    'decision_upsert_user_intelligence_profile',
+    'decision_calculate_opportunity_score',
+    'decision_determine_recommended_action',
+    'decision_claim_analysis_batch',
+    'decision_record_ai_analysis',
+    'decision_mark_ai_analysis_failed'
 )
 
 $fullMigrationText = ($migrationFiles | ForEach-Object { Get-Content -Raw $_.FullName }) -join "`n"

@@ -8,6 +8,7 @@ This directory is reserved for source-controlled n8n artifacts.
 Current maintained workflow:
 
 - `workflows/collect-opportunities.json`
+- `workflows/analyze-opportunities.json`
 
 Guidelines:
 
