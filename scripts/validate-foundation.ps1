@@ -20,10 +20,18 @@ $requiredFiles = @(
     'database\migrations\20260708141000__create_v1_core_tables.sql',
     'database\migrations\20260708141100__create_v1_indexes.sql',
     'database\migrations\20260708141200__create_v1_updated_at_triggers.sql',
+    'database\migrations\20260708153000__add_block3_collection_functions.sql',
     'database\sql\verify_v1_schema.sql',
+    'database\sql\verify_block3_collection.sql',
+    'docs\opportunity-collection.md',
+    'docs\runbooks\import-collect-opportunities.md',
     'n8n\README.md',
+    'n8n\workflows\collect-opportunities.json',
+    'config\n8n\collect-opportunities.sources.json',
+    'config\n8n\collect-opportunities.md',
     'scripts\README.md',
     'scripts\validate-migrations.ps1',
+    'scripts\validate-collection-workflow.ps1',
     'tests\README.md'
 )
 

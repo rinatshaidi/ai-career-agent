@@ -1,0 +1,634 @@
+{
+  "name": "Collect Opportunities",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "4a2c2b2c-0b80-4c55-a6b6-d2c6927e6fb1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        200,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "c11f277b-7841-44b8-9ffb-df3461d4a343",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const first = $input.all()[0]?.json ?? {};\nconst triggerMode = Object.keys(first).length > 0 ? 'schedule' : 'manual';\nreturn [{\n  json: {\n    workflow_name: 'Collect Opportunities',\n    triggered_by: triggerMode,\n    started_at_utc: new Date().toISOString(),\n  },\n}];"
+      },
+      "id": "54cf3168-6dde-41ae-8ee2-f7946d331544",
+      "name": "Init Collection Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const root = $('Init Collection Context').first().json;\nreturn [{\n  json: {\n    source_name: 'We Work Remotely RSS',\n    source_catalog_type: 'website',\n    config_reference: 'config/n8n/collect-opportunities.sources.json#implementedSources.rss.weworkremotely',\n    run_started_at: root.started_at_utc,\n    feed_url: $env.COLLECT_RSS_WWR_URL || 'https://weworkremotely.com/remote-jobs.rss',\n    opportunity_type: 'vacancy',\n    source_type: 'website',\n    remote_type: 'remote',\n  },\n}];"
+      },
+      "id": "3c6a1bb8-9db2-4a29-a051-f2be2f82d241",
+      "name": "RSS | We Work Remotely | Source Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT *\nFROM collection_ensure_source(\n  $1::text,\n  $2::text,\n  true,\n  $3::text\n);",
+        "options": {
+          "queryReplacement": [
+            "={{ $json.source_name }}",
+            "={{ $json.source_catalog_type }}",
+            "={{ $json.config_reference }}"
+          ]
+        }
+      },
+      "id": "4a6f79f7-f8bc-421a-8cad-72dd0fed3d1b",
+      "name": "RSS | We Work Remotely | Ensure Source",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1040,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('RSS | We Work Remotely | Source Metadata').first().json.feed_url }}"
+      },
+      "id": "51261e18-09f7-421f-a96c-0081bc105b90",
+      "name": "RSS | We Work Remotely | Read Feed",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1.1,
+      "position": [
+        1320,
+        40
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const source = {\n  ...$('RSS | We Work Remotely | Source Metadata').first().json,\n  ...$('RSS | We Work Remotely | Ensure Source').first().json,\n};\nconst rows = $input.all();\nconst stripHtml = (value) => String(value || '').replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim();\nconst normalizeText = (value) => stripHtml(value).slice(0, 12000);\nconst buildDedupeKey = (row) => [row.title, row.company_name, row.url, row.published_at].filter(Boolean).join(' | ').toLowerCase();\n\nif (rows.length === 1 && rows[0].json && rows[0].json.error) {\n  return [{\n    json: {\n      source_id: source.source_id,\n      run_started_at: source.run_started_at,\n      fetch_error: rows[0].json.error.message || JSON.stringify(rows[0].json.error),\n      opportunities: [],\n    },\n  }];\n}\n\nconst opportunities = rows.map(({ json }) => {\n  const title = normalizeText(json.title || json.creator || 'Untitled opportunity');\n  const description = normalizeText(json.contentSnippet || json.content || json.summary || json.isoDate || '');\n  const rawText = normalizeText([json.title, json.contentSnippet, json.content, json.summary].filter(Boolean).join('\\n\\n'));\n  const companyName = normalizeText(json.creator || json['dc:creator'] || '').slice(0, 255) || null;\n  const url = json.link || json.guid || null;\n  const publishedAt = json.isoDate || json.pubDate || null;\n  return {\n    external_id: json.guid || json.link || null,\n    title,\n    description: description || null,\n    raw_text: rawText || description || title,\n    url,\n    company_name: companyName,\n    opportunity_type: source.opportunity_type,\n    source_type: source.source_type,\n    location: null,\n    remote_type: source.remote_type,\n    budget_min: null,\n    budget_max: null,\n    currency: null,\n    published_at: publishedAt,\n    collected_at: new Date().toISOString(),\n    status: 'new',\n    dedupe_key: buildDedupeKey({ title, company_name: companyName, url, published_at: publishedAt }),\n  };\n});\n\nreturn [{\n  json: {\n    source_id: source.source_id,\n    run_started_at: source.run_started_at,\n    fetch_error: null,\n    opportunities,\n  },\n}];"
+      },
+      "id": "c63749ac-b9bd-4503-b534-813945a5a4a2",
+      "name": "RSS | We Work Remotely | Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT *\nFROM collection_ingest_source_batch(\n  $1::uuid,\n  $2::jsonb,\n  $3::timestamptz,\n  NULLIF($4::text, '')\n);",
+        "options": {
+          "queryReplacement": [
+            "={{ $json.source_id }}",
+            "={{ JSON.stringify($json.opportunities) }}",
+            "={{ $json.run_started_at }}",
+            "={{ $json.fetch_error || '' }}"
+          ]
+        }
+      },
+      "id": "0f0dc79b-5852-4963-8b34-8c7b8445685f",
+      "name": "RSS | We Work Remotely | Ingest Batch",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1880,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const root = $('Init Collection Context').first().json;\nreturn [{\n  json: {\n    source_name: 'Remote OK RSS',\n    source_catalog_type: 'website',\n    config_reference: 'config/n8n/collect-opportunities.sources.json#implementedSources.rss.remoteok',\n    run_started_at: root.started_at_utc,\n    feed_url: $env.COLLECT_RSS_REMOTEOK_URL || 'https://remoteok.com/remote-dev-jobs.rss',\n    opportunity_type: 'vacancy',\n    source_type: 'website',\n    remote_type: 'remote',\n  },\n}];"
+      },
+      "id": "9cd96a26-bd56-4d12-8c63-ec1855018fdb",
+      "name": "RSS | Remote OK | Source Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT *\nFROM collection_ensure_source(\n  $1::text,\n  $2::text,\n  true,\n  $3::text\n);",
+        "options": {
+          "queryReplacement": [
+            "={{ $json.source_name }}",
+            "={{ $json.source_catalog_type }}",
+            "={{ $json.config_reference }}"
+          ]
+        }
+      },
+      "id": "0a58f0a0-81bb-4494-a831-2524791cc6ab",
+      "name": "RSS | Remote OK | Ensure Source",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1040,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('RSS | Remote OK | Source Metadata').first().json.feed_url }}"
+      },
+      "id": "59f6e444-db70-4b9e-b5cb-9a2c85f75c03",
+      "name": "RSS | Remote OK | Read Feed",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1.1,
+      "position": [
+        1320,
+        220
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const source = {\n  ...$('RSS | Remote OK | Source Metadata').first().json,\n  ...$('RSS | Remote OK | Ensure Source').first().json,\n};\nconst rows = $input.all();\nconst stripHtml = (value) => String(value || '').replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim();\nconst normalizeText = (value) => stripHtml(value).slice(0, 12000);\nconst buildDedupeKey = (row) => [row.title, row.company_name, row.url, row.published_at].filter(Boolean).join(' | ').toLowerCase();\n\nif (rows.length === 1 && rows[0].json && rows[0].json.error) {\n  return [{\n    json: {\n      source_id: source.source_id,\n      run_started_at: source.run_started_at,\n      fetch_error: rows[0].json.error.message || JSON.stringify(rows[0].json.error),\n      opportunities: [],\n    },\n  }];\n}\n\nconst opportunities = rows.map(({ json }) => {\n  const title = normalizeText(json.title || json.creator || 'Untitled opportunity');\n  const description = normalizeText(json.contentSnippet || json.content || json.summary || json.isoDate || '');\n  const rawText = normalizeText([json.title, json.contentSnippet, json.content, json.summary].filter(Boolean).join('\\n\\n'));\n  const companyName = normalizeText(json.creator || json['dc:creator'] || '').slice(0, 255) || null;\n  const url = json.link || json.guid || null;\n  const publishedAt = json.isoDate || json.pubDate || null;\n  return {\n    external_id: json.guid || json.link || null,\n    title,\n    description: description || null,\n    raw_text: rawText || description || title,\n    url,\n    company_name: companyName,\n    opportunity_type: source.opportunity_type,\n    source_type: source.source_type,\n    location: null,\n    remote_type: source.remote_type,\n    budget_min: null,\n    budget_max: null,\n    currency: null,\n    published_at: publishedAt,\n    collected_at: new Date().toISOString(),\n    status: 'new',\n    dedupe_key: buildDedupeKey({ title, company_name: companyName, url, published_at: publishedAt }),\n  };\n});\n\nreturn [{\n  json: {\n    source_id: source.source_id,\n    run_started_at: source.run_started_at,\n    fetch_error: null,\n    opportunities,\n  },\n}];"
+      },
+      "id": "d15b2ebd-80c7-4a0e-8a6f-fd34574fa2b3",
+      "name": "RSS | Remote OK | Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT *\nFROM collection_ingest_source_batch(\n  $1::uuid,\n  $2::jsonb,\n  $3::timestamptz,\n  NULLIF($4::text, '')\n);",
+        "options": {
+          "queryReplacement": [
+            "={{ $json.source_id }}",
+            "={{ JSON.stringify($json.opportunities) }}",
+            "={{ $json.run_started_at }}",
+            "={{ $json.fetch_error || '' }}"
+          ]
+        }
+      },
+      "id": "aa2c2b90-7c50-4b0f-8074-f4a0dd3ad5ce",
+      "name": "RSS | Remote OK | Ingest Batch",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1880,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const root = $('Init Collection Context').first().json;\nreturn [{\n  json: {\n    source_name: 'HeadHunter Automation Search',\n    source_catalog_type: 'job_board',\n    config_reference: 'config/n8n/collect-opportunities.sources.json#implementedSources.headhunter.automation',\n    run_started_at: root.started_at_utc,\n    request_url: $env.COLLECT_HH_AUTOMATION_URL || 'https://api.hh.ru/vacancies?text=n8n%20OR%20automation%20OR%20integration%20OR%20workflow&per_page=20&order_by=publication_time',\n    opportunity_type: 'vacancy',\n    source_type: 'job_board',\n  },\n}];"
+      },
+      "id": "b625795f-d1aa-416b-a097-097ad17b8bcc",
+      "name": "HH | Automation | Source Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT *\nFROM collection_ensure_source(\n  $1::text,\n  $2::text,\n  true,\n  $3::text\n);",
+        "options": {
+          "queryReplacement": [
+            "={{ $json.source_name }}",
+            "={{ $json.source_catalog_type }}",
+            "={{ $json.config_reference }}"
+          ]
+        }
+      },
+      "id": "9fe5e31a-cb57-45ca-a76c-9afdd47a7dc8",
+      "name": "HH | Automation | Ensure Source",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1040,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('HH | Automation | Source Metadata').first().json.request_url }}"
+      },
+      "id": "ad63a959-fc43-4663-97bc-7501fec45620",
+      "name": "HH | Automation | Fetch Vacancies",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        420
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const source = {\n  ...$('HH | Automation | Source Metadata').first().json,\n  ...$('HH | Automation | Ensure Source').first().json,\n};\nconst payload = $input.all()[0]?.json ?? {};\nconst normalizeText = (value) => String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 12000);\nconst buildDedupeKey = (row) => [row.title, row.company_name, row.url, row.published_at].filter(Boolean).join(' | ').toLowerCase();\n\nif (payload.error) {\n  return [{\n    json: {\n      source_id: source.source_id,\n      run_started_at: source.run_started_at,\n      fetch_error: payload.error.message || JSON.stringify(payload.error),\n      opportunities: [],\n    },\n  }];\n}\n\nconst items = Array.isArray(payload.items) ? payload.items : [];\nconst opportunities = items.map((item) => {\n  const description = normalizeText([item.snippet?.requirement, item.snippet?.responsibility].filter(Boolean).join(' '));\n  const rawText = JSON.stringify(item);\n  const title = normalizeText(item.name || 'Untitled vacancy');\n  const companyName = normalizeText(item.employer?.name || '').slice(0, 255) || null;\n  const location = normalizeText(item.area?.name || '') || null;\n  const remoteType = item.schedule?.id === 'remote' ? 'remote' : (item.work_format?.includes?.('REMOTE') ? 'remote' : 'unknown');\n  return {\n    external_id: item.id || null,\n    title,\n    description: description || null,\n    raw_text: rawText,\n    url: item.alternate_url || item.url || null,\n    company_name: companyName,\n    opportunity_type: source.opportunity_type,\n    source_type: source.source_type,\n    location,\n    remote_type: remoteType,\n    budget_min: item.salary?.from ?? null,\n    budget_max: item.salary?.to ?? null,\n    currency: item.salary?.currency ?? null,\n    published_at: item.published_at || null,\n    collected_at: new Date().toISOString(),\n    status: 'new',\n    dedupe_key: buildDedupeKey({ title, company_name: companyName, url: item.alternate_url || item.url || null, published_at: item.published_at || null }),\n  };\n});\n\nreturn [{\n  json: {\n    source_id: source.source_id,\n    run_started_at: source.run_started_at,\n    fetch_error: null,\n    opportunities,\n  },\n}];"
+      },
+      "id": "eb739da9-bccd-4153-aef2-f145c4cf5c8f",
+      "name": "HH | Automation | Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT *\nFROM collection_ingest_source_batch(\n  $1::uuid,\n  $2::jsonb,\n  $3::timestamptz,\n  NULLIF($4::text, '')\n);",
+        "options": {
+          "queryReplacement": [
+            "={{ $json.source_id }}",
+            "={{ JSON.stringify($json.opportunities) }}",
+            "={{ $json.run_started_at }}",
+            "={{ $json.fetch_error || '' }}"
+          ]
+        }
+      },
+      "id": "3444a951-5d62-4ba9-ad63-4b302431b84e",
+      "name": "HH | Automation | Ingest Batch",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1880,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const root = $('Init Collection Context').first().json;\nreturn [{\n  json: {\n    source_name: 'HeadHunter OpenAI Search',\n    source_catalog_type: 'job_board',\n    config_reference: 'config/n8n/collect-opportunities.sources.json#implementedSources.headhunter.openai',\n    run_started_at: root.started_at_utc,\n    request_url: $env.COLLECT_HH_OPENAI_URL || 'https://api.hh.ru/vacancies?text=openai%20OR%20llm%20OR%20ai%20automation%20OR%20telegram%20bot&per_page=20&order_by=publication_time',\n    opportunity_type: 'vacancy',\n    source_type: 'job_board',\n  },\n}];"
+      },
+      "id": "969088fc-9523-45a4-99fc-3549ff0a1f57",
+      "name": "HH | OpenAI | Source Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT *\nFROM collection_ensure_source(\n  $1::text,\n  $2::text,\n  true,\n  $3::text\n);",
+        "options": {
+          "queryReplacement": [
+            "={{ $json.source_name }}",
+            "={{ $json.source_catalog_type }}",
+            "={{ $json.config_reference }}"
+          ]
+        }
+      },
+      "id": "3464679c-208c-4d1c-9971-c709dc00ece1",
+      "name": "HH | OpenAI | Ensure Source",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1040,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('HH | OpenAI | Source Metadata').first().json.request_url }}"
+      },
+      "id": "9d263c6d-aae2-42b8-b8d2-fcb3259d26e1",
+      "name": "HH | OpenAI | Fetch Vacancies",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        600
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const source = {\n  ...$('HH | OpenAI | Source Metadata').first().json,\n  ...$('HH | OpenAI | Ensure Source').first().json,\n};\nconst payload = $input.all()[0]?.json ?? {};\nconst normalizeText = (value) => String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 12000);\nconst buildDedupeKey = (row) => [row.title, row.company_name, row.url, row.published_at].filter(Boolean).join(' | ').toLowerCase();\n\nif (payload.error) {\n  return [{\n    json: {\n      source_id: source.source_id,\n      run_started_at: source.run_started_at,\n      fetch_error: payload.error.message || JSON.stringify(payload.error),\n      opportunities: [],\n    },\n  }];\n}\n\nconst items = Array.isArray(payload.items) ? payload.items : [];\nconst opportunities = items.map((item) => {\n  const description = normalizeText([item.snippet?.requirement, item.snippet?.responsibility].filter(Boolean).join(' '));\n  const rawText = JSON.stringify(item);\n  const title = normalizeText(item.name || 'Untitled vacancy');\n  const companyName = normalizeText(item.employer?.name || '').slice(0, 255) || null;\n  const location = normalizeText(item.area?.name || '') || null;\n  const remoteType = item.schedule?.id === 'remote' ? 'remote' : (item.work_format?.includes?.('REMOTE') ? 'remote' : 'unknown');\n  return {\n    external_id: item.id || null,\n    title,\n    description: description || null,\n    raw_text: rawText,\n    url: item.alternate_url || item.url || null,\n    company_name: companyName,\n    opportunity_type: source.opportunity_type,\n    source_type: source.source_type,\n    location,\n    remote_type: remoteType,\n    budget_min: item.salary?.from ?? null,\n    budget_max: item.salary?.to ?? null,\n    currency: item.salary?.currency ?? null,\n    published_at: item.published_at || null,\n    collected_at: new Date().toISOString(),\n    status: 'new',\n    dedupe_key: buildDedupeKey({ title, company_name: companyName, url: item.alternate_url || item.url || null, published_at: item.published_at || null }),\n  };\n});\n\nreturn [{\n  json: {\n    source_id: source.source_id,\n    run_started_at: source.run_started_at,\n    fetch_error: null,\n    opportunities,\n  },\n}];"
+      },
+      "id": "44e73eb6-5db8-4541-9d84-9e3b0e31afe5",
+      "name": "HH | OpenAI | Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "database",
+        "operation": "executeQuery",
+        "query": "SELECT *\nFROM collection_ingest_source_batch(\n  $1::uuid,\n  $2::jsonb,\n  $3::timestamptz,\n  NULLIF($4::text, '')\n);",
+        "options": {
+          "queryReplacement": [
+            "={{ $json.source_id }}",
+            "={{ JSON.stringify($json.opportunities) }}",
+            "={{ $json.run_started_at }}",
+            "={{ $json.fetch_error || '' }}"
+          ]
+        }
+      },
+      "id": "0c8729c7-649d-491f-a181-3726ac1de595",
+      "name": "HH | OpenAI | Ingest Batch",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1880,
+        600
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Init Collection Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Init Collection Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Init Collection Context": {
+      "main": [
+        [
+          {
+            "node": "RSS | We Work Remotely | Source Metadata",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "RSS | Remote OK | Source Metadata",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "HH | Automation | Source Metadata",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "HH | OpenAI | Source Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RSS | We Work Remotely | Source Metadata": {
+      "main": [
+        [
+          {
+            "node": "RSS | We Work Remotely | Ensure Source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RSS | We Work Remotely | Ensure Source": {
+      "main": [
+        [
+          {
+            "node": "RSS | We Work Remotely | Read Feed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RSS | We Work Remotely | Read Feed": {
+      "main": [
+        [
+          {
+            "node": "RSS | We Work Remotely | Normalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RSS | We Work Remotely | Normalize": {
+      "main": [
+        [
+          {
+            "node": "RSS | We Work Remotely | Ingest Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RSS | Remote OK | Source Metadata": {
+      "main": [
+        [
+          {
+            "node": "RSS | Remote OK | Ensure Source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RSS | Remote OK | Ensure Source": {
+      "main": [
+        [
+          {
+            "node": "RSS | Remote OK | Read Feed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RSS | Remote OK | Read Feed": {
+      "main": [
+        [
+          {
+            "node": "RSS | Remote OK | Normalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RSS | Remote OK | Normalize": {
+      "main": [
+        [
+          {
+            "node": "RSS | Remote OK | Ingest Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HH | Automation | Source Metadata": {
+      "main": [
+        [
+          {
+            "node": "HH | Automation | Ensure Source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HH | Automation | Ensure Source": {
+      "main": [
+        [
+          {
+            "node": "HH | Automation | Fetch Vacancies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HH | Automation | Fetch Vacancies": {
+      "main": [
+        [
+          {
+            "node": "HH | Automation | Normalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HH | Automation | Normalize": {
+      "main": [
+        [
+          {
+            "node": "HH | Automation | Ingest Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HH | OpenAI | Source Metadata": {
+      "main": [
+        [
+          {
+            "node": "HH | OpenAI | Ensure Source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HH | OpenAI | Ensure Source": {
+      "main": [
+        [
+          {
+            "node": "HH | OpenAI | Fetch Vacancies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HH | OpenAI | Fetch Vacancies": {
+      "main": [
+        [
+          {
+            "node": "HH | OpenAI | Normalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HH | OpenAI | Normalize": {
+      "main": [
+        [
+          {
+            "node": "HH | OpenAI | Ingest Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Moscow",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true
+  },
+  "active": false,
+  "meta": null
+}

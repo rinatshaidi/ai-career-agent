@@ -59,6 +59,8 @@ Reserved under `n8n/`.
 
 n8n is positioned as the automation and integration runtime. It should coordinate workflows, trigger actions, and integrate systems, but persistent business state should remain owned by PostgreSQL and future application services.
 
+Block 3 introduces the first production collection workflow, `Collect Opportunities`, with independent source branches for RSS feeds and the official HeadHunter vacancies API. Each branch normalizes incoming records into the shared Opportunity payload and sends the batch into PostgreSQL helper functions for deduplicated persistence and run logging.
+
 ### 5. Configuration Layer
 
 Reserved under `config/` and root environment files.
@@ -106,6 +108,13 @@ This is a better choice than cloning live infrastructure behavior into the repos
 
 These boundaries reduce long-term confusion about where logic, state, and operational knowledge should live.
 
+For collection specifically:
+
+- source-specific fetch logic lives in n8n connector branches
+- source normalization happens before persistence
+- deduplication and final persistence happen in PostgreSQL helper functions
+- source failures are logged per branch and do not redefine PostgreSQL as an orchestration engine
+
 ## Scalability Path
 
 The current structure is ready to support the following later, without repository redesign:
@@ -118,15 +127,20 @@ The current structure is ready to support the following later, without repositor
 - structured observability and runbooks
 - application test suites by layer
 
-## Explicit Block 1 Constraints
+## Current Scope Boundary
 
-The architecture intentionally does not implement:
+The architecture currently includes:
 
-- opportunity search logic
+- PostgreSQL schema and migration assets
+- source collection through n8n
+- unified Opportunity normalization
+- deduplicated persistence and operational source logging
+
+The architecture intentionally still does not implement:
+
 - AI evaluation logic
-- Telegram bot behavior
-- PostgreSQL schema
-- n8n workflows
 - opportunity scoring
-
-Those concerns are acknowledged in the architecture but remain out of scope until later blocks.
+- Telegram notifications
+- Google Sheets journaling
+- backend APIs
+- web interface

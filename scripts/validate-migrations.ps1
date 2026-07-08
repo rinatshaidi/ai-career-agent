@@ -11,16 +11,21 @@ param(
 )
 
 $migrationDir = Join-Path $Root 'database\migrations'
-$verificationSql = Join-Path $Root 'database\sql\verify_v1_schema.sql'
+$verificationSqlFiles = @(
+    (Join-Path $Root 'database\sql\verify_v1_schema.sql'),
+    (Join-Path $Root 'database\sql\verify_block3_collection.sql')
+)
 
 if (-not (Test-Path -LiteralPath $migrationDir -PathType Container)) {
     Write-Error "Migration directory not found: $migrationDir"
     exit 1
 }
 
-if (-not (Test-Path -LiteralPath $verificationSql -PathType Leaf)) {
-    Write-Error "Verification SQL file not found: $verificationSql"
-    exit 1
+foreach ($verificationSql in $verificationSqlFiles) {
+    if (-not (Test-Path -LiteralPath $verificationSql -PathType Leaf)) {
+        Write-Error "Verification SQL file not found: $verificationSql"
+        exit 1
+    }
 }
 
 $migrationFiles = Get-ChildItem -Path $migrationDir -Filter '*.sql' | Sort-Object Name
@@ -43,6 +48,12 @@ $requiredTables = @(
     'system_logs'
 )
 
+$requiredFunctions = @(
+    'collection_ensure_source',
+    'collection_upsert_opportunity',
+    'collection_ingest_source_batch'
+)
+
 $fullMigrationText = ($migrationFiles | ForEach-Object { Get-Content -Raw $_.FullName }) -join "`n"
 $missingTableDefinitions = @()
 
@@ -52,8 +63,21 @@ foreach ($tableName in $requiredTables) {
     }
 }
 
+$missingFunctionDefinitions = @()
+
+foreach ($functionName in $requiredFunctions) {
+    if ($fullMigrationText -notmatch ("FUNCTION\s+" + [regex]::Escape($functionName) + "\s*\(")) {
+        $missingFunctionDefinitions += $functionName
+    }
+}
+
 if ($missingTableDefinitions.Count -gt 0) {
     Write-Error ("Missing CREATE TABLE statements for: " + ($missingTableDefinitions -join ', '))
+    exit 1
+}
+
+if ($missingFunctionDefinitions.Count -gt 0) {
+    Write-Error ("Missing function definitions for: " + ($missingFunctionDefinitions -join ', '))
     exit 1
 }
 
@@ -123,16 +147,18 @@ try {
         }
     }
 
-    $verificationContainerPath = '/tmp/verify_v1_schema.sql'
-    & $dockerCommand.Source cp $verificationSql "${ContainerName}:${verificationContainerPath}"
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Failed to copy verification SQL into container.'
-    }
+    foreach ($verificationSql in $verificationSqlFiles) {
+        $verificationContainerPath = "/tmp/$([System.IO.Path]::GetFileName($verificationSql))"
+        & $dockerCommand.Source cp $verificationSql "${ContainerName}:${verificationContainerPath}"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to copy verification SQL into container: $verificationSql"
+        }
 
-    Write-Host 'Running schema verification...' -ForegroundColor Cyan
-    & $dockerCommand.Source exec $ContainerName psql -v ON_ERROR_STOP=1 -U $DbUser -d $DbName -f $verificationContainerPath
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Schema verification failed.'
+        Write-Host ("Running verification: " + [System.IO.Path]::GetFileName($verificationSql)) -ForegroundColor Cyan
+        & $dockerCommand.Source exec $ContainerName psql -v ON_ERROR_STOP=1 -U $DbUser -d $DbName -f $verificationContainerPath
+        if ($LASTEXITCODE -ne 0) {
+            throw "Schema verification failed: $verificationSql"
+        }
     }
 
     Write-Host 'Disposable migration validation passed.' -ForegroundColor Green

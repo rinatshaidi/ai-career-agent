@@ -22,3 +22,5 @@ If Docker CLI is available locally, you can also validate against a disposable P
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\validate-migrations.ps1 -Mode docker
 ```
+
+Block 3 adds ingestion helper functions and workflow support SQL. Verification SQL for collection helpers lives in `database/sql/verify_block3_collection.sql`.

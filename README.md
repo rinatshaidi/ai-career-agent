@@ -1,6 +1,6 @@
 # AI Career Agent
 
-AI Career Agent is a production-oriented repository foundation for an AI-driven career automation platform. Block 1 establishes the project structure, technical boundaries, documentation baseline, and local infrastructure conventions without implementing business logic.
+AI Career Agent is a production-oriented repository for an AI-driven career automation platform. The repository now contains the project foundation, the first PostgreSQL data model, and the first opportunity collection workflow with deduplicated persistence into PostgreSQL.
 
 ## Project Goals
 
@@ -84,7 +84,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\validate-migrations.ps1 -Mode
 
 - Block 1 builds the foundation only.
 - Block 2 adds the V1 PostgreSQL schema, SQL migrations, and migration validation assets.
-- Business logic, n8n workflows, data collection, AI execution, and Telegram bot implementation belong to later blocks.
+- Block 3 adds the first opportunity collection workflow, source contracts, ingestion SQL helpers, and deduplicated persistence into PostgreSQL.
+- AI execution and Telegram bot implementation belong to later blocks.
 - New SQL changes should go only into `database/migrations/`.
 - Schema verification SQL belongs in `database/sql/`.
 - Exported n8n workflows should be versioned in `n8n/workflows/` or `n8n/exports/`.
@@ -93,4 +94,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\validate-migrations.ps1 -Mode
 
 ## Current Status
 
-The repository foundation is ready for architecture review and for Block 2 planning, without modifying existing infrastructure or introducing unfinished application logic.
+The repository currently includes:
+
+- Block 1 foundation and project structure
+- Block 2 PostgreSQL schema and migration validation assets
+- Block 3 opportunity collection workflow for RSS and HeadHunter
+
+AI analysis, scoring, Telegram notifications, Google Sheets journaling, backend APIs, and UI remain intentionally out of scope for the current repository state.

@@ -190,6 +190,17 @@ V1 is delivered through:
 - `database/migrations/20260708141000__create_v1_core_tables.sql`
 - `database/migrations/20260708141100__create_v1_indexes.sql`
 - `database/migrations/20260708141200__create_v1_updated_at_triggers.sql`
+- `database/migrations/20260708153000__add_block3_collection_functions.sql`
+
+## Block 3 Collection Helpers
+
+Block 3 adds database-side helpers so every source branch uses one persistence path:
+
+- `collection_ensure_source(...)`
+- `collection_upsert_opportunity(...)`
+- `collection_ingest_source_batch(...)`
+
+This keeps deduplication, run logging, and final storage consistent across RSS and HeadHunter connectors.
 
 ## Validation Approach
 

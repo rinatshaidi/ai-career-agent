@@ -17,3 +17,6 @@ The format is based on Keep a Changelog and the project follows semantic version
 - V1 PostgreSQL schema migrations for users, profiles, sources, opportunities, analysis, scores, notifications, journal, and operational logs
 - disposable migration validation script and schema verification SQL
 - dedicated database design documentation for Block 2
+- Block 3 collection helper functions for source registration, opportunity upsert, and batch ingestion logging
+- `Collect Opportunities` workflow with RSS and HeadHunter connector branches
+- source catalog contract and workflow validation script
