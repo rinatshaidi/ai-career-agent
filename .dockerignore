@@ -1,0 +1,11 @@
+.git
+.agents
+.codex
+.env
+__pycache__
+*.pyc
+*.pyo
+.test_tmp
+data
+logs
+JobMonitor_Development_Plan.docx
