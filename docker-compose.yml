@@ -1,100 +1,45 @@
-name: ${PROJECT_NAME:-ai-career-agent}
-
-x-common-env: &common-env
-  TZ: ${TZ:-Europe/Moscow}
-  APP_ENV: ${APP_ENV:-local}
-  LOG_LEVEL: ${LOG_LEVEL:-info}
+x-jobmonitor-common: &jobmonitor-common
+  build:
+    context: .
+  image: jobmonitor:0.3
+  env_file:
+    - .env
+  volumes:
+    - ./data:/app/data
+    - ./logs:/app/logs
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  security_opt:
+    - no-new-privileges:true
+  stop_grace_period: 60s
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
 
 services:
-  postgres:
-    profiles:
-      - local-infra
-    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-ai_career_agent}
-      POSTGRES_USER: ${POSTGRES_USER:-ai_career_agent}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
-      TZ: ${TZ:-Europe/Moscow}
-      PGTZ: ${TZ:-Europe/Moscow}
-    ports:
-      - "${POSTGRES_LOCAL_PORT:-5433}:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+  worker:
+    <<: *jobmonitor-common
+    container_name: jobmonitor-worker
+    command: ["python", "worker.py"]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ai_career_agent} -d ${POSTGRES_DB:-ai_career_agent}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    networks:
-      - ai-career-agent
+      test: ["CMD", "python", "healthcheck.py", "worker"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
 
-  n8n:
-    profiles:
-      - local-infra
-    image: ${N8N_IMAGE:-docker.n8n.io/n8nio/n8n:latest}
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      <<: *common-env
-      N8N_HOST: ${N8N_HOST:-localhost}
-      N8N_PORT: 5678
-      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
-      N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL:-http://localhost:5679}
-      WEBHOOK_URL: ${WEBHOOK_URL:-http://localhost:5679}
-      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-change_me}
-      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
-      N8N_RUNNERS_ENABLED: ${N8N_RUNNERS_ENABLED:-true}
-      N8N_DIAGNOSTICS_ENABLED: "false"
-      N8N_PERSONALIZATION_ENABLED: "false"
-      DB_TYPE: postgresdb
-      DB_POSTGRESDB_HOST: ${POSTGRES_HOST:-postgres}
-      DB_POSTGRESDB_PORT: ${POSTGRES_PORT:-5432}
-      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB:-ai_career_agent}
-      DB_POSTGRESDB_USER: ${POSTGRES_USER:-ai_career_agent}
-      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
-      DB_POSTGRESDB_SCHEMA: ${N8N_POSTGRES_SCHEMA:-public}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_API_BASE_URL: ${OPENAI_API_BASE_URL:-https://api.openai.com/v1}
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      TELEGRAM_BOT_API_BASE_URL: ${TELEGRAM_BOT_API_BASE_URL:-https://api.telegram.org}
-      TELEGRAM_BOT_NAME: ${TELEGRAM_BOT_NAME:-Ri Career Agent}
-      COLLECT_RSS_WWR_URL: ${COLLECT_RSS_WWR_URL:-https://weworkremotely.com/remote-jobs.rss}
-      COLLECT_RSS_REMOTEOK_URL: ${COLLECT_RSS_REMOTEOK_URL:-https://remoteok.com/remote-dev-jobs.rss}
-      COLLECT_HH_AUTOMATION_URL: ${COLLECT_HH_AUTOMATION_URL:-https://api.hh.ru/vacancies?text=n8n%20OR%20automation%20OR%20integration%20OR%20workflow&per_page=20&order_by=publication_time}
-      COLLECT_HH_OPENAI_URL: ${COLLECT_HH_OPENAI_URL:-https://api.hh.ru/vacancies?text=openai%20OR%20llm%20OR%20ai%20automation%20OR%20telegram%20bot&per_page=20&order_by=publication_time}
-      COLLECT_TELEGRAM_ENABLED: ${COLLECT_TELEGRAM_ENABLED:-false}
-      AI_DECISION_PROVIDER: ${AI_DECISION_PROVIDER:-openai}
-      AI_DECISION_PROFILE_SLUG: ${AI_DECISION_PROFILE_SLUG:-}
-      AI_DECISION_BATCH_SIZE: ${AI_DECISION_BATCH_SIZE:-10}
-      AI_DECISION_PROMPT_VERSION: ${AI_DECISION_PROMPT_VERSION:-block4-v1}
-      AI_DECISION_MODEL: ${AI_DECISION_MODEL:-gpt-5.5}
-      AI_DECISION_RETRY_DELAY_MINUTES: ${AI_DECISION_RETRY_DELAY_MINUTES:-30}
-      OPENAI_REQUEST_TIMEOUT_MS: ${OPENAI_REQUEST_TIMEOUT_MS:-60000}
-      TELEGRAM_NOTIFICATION_PROFILE_SLUG: ${TELEGRAM_NOTIFICATION_PROFILE_SLUG:-}
-      TELEGRAM_NOTIFICATION_BATCH_SIZE: ${TELEGRAM_NOTIFICATION_BATCH_SIZE:-10}
-      TELEGRAM_NOTIFICATION_RETRY_DELAY_MINUTES: ${TELEGRAM_NOTIFICATION_RETRY_DELAY_MINUTES:-30}
-      TELEGRAM_NOTIFICATION_LOCK_TIMEOUT_MINUTES: ${TELEGRAM_NOTIFICATION_LOCK_TIMEOUT_MINUTES:-30}
-      TELEGRAM_REQUEST_TIMEOUT_MS: ${TELEGRAM_REQUEST_TIMEOUT_MS:-30000}
-      TELEGRAM_INLINE_ACTIONS_ENABLED: ${TELEGRAM_INLINE_ACTIONS_ENABLED:-true}
-      GOOGLE_SHEETS_ARCHIVE_DOCUMENT_ID: ${GOOGLE_SHEETS_ARCHIVE_DOCUMENT_ID:-}
-      GOOGLE_SHEETS_ARCHIVE_SHEET_NAME: ${GOOGLE_SHEETS_ARCHIVE_SHEET_NAME:-Feedback Archive}
-      WORKING_MEMORY_RETENTION_DAYS: ${WORKING_MEMORY_RETENTION_DAYS:-60}
-    ports:
-      - "${N8N_LOCAL_PORT:-5679}:5678"
-    volumes:
-      - n8n_data:/home/node/.n8n
-      - ./n8n/workflows:/workspace/workflows
-    networks:
-      - ai-career-agent
-
-networks:
-  ai-career-agent:
-    driver: bridge
-
-volumes:
-  postgres_data:
-  n8n_data:
+  profile-bot:
+    <<: *jobmonitor-common
+    container_name: jobmonitor-profile-bot
+    command: ["python", "profile_bot.py"]
+    healthcheck:
+      test: ["CMD", "python", "healthcheck.py", "profile_bot"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
