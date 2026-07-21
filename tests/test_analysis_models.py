@@ -3,7 +3,15 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from models import AIAnalysis, CandidateProfile, Difficulty, ProfileError
+from models import (
+    AIAnalysis,
+    CandidateProfile,
+    Difficulty,
+    ProfileError,
+    RecommendationCategory,
+    SearchTrack,
+    TrackAssessment,
+)
 
 
 VALID_ANALYSIS = {
@@ -37,6 +45,40 @@ class AIAnalysisTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing fields"):
             AIAnalysis.from_mapping(invalid)
 
+    def test_validates_track_aware_recommendation(self) -> None:
+        analysis = AIAnalysis.from_mapping(
+            {
+                **VALID_ANALYSIS,
+                "recommendation": "review",
+                "primary_track_id": "automation",
+                "primary_track_name": "AI-автоматизация",
+                "match_reasons": ["Совпадают задачи автоматизации."],
+                "required_actions": [],
+                "employment_type": "частичная занятость",
+                "track_assessments": [
+                    {
+                        "track_id": "automation",
+                        "track_name": "AI-автоматизация",
+                        "score": 64,
+                        "reason": "Есть смысловая близость.",
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(analysis.recommendation, RecommendationCategory.REVIEW)
+        self.assertEqual(
+            analysis.track_assessments,
+            (
+                TrackAssessment(
+                    track_id="automation",
+                    track_name="AI-автоматизация",
+                    score=64,
+                    reason="Есть смысловая близость.",
+                ),
+            ),
+        )
+
 
 class CandidateProfileTests(unittest.TestCase):
     def test_reads_example_profile(self) -> None:
@@ -50,6 +92,28 @@ class CandidateProfileTests(unittest.TestCase):
             CandidateProfile.from_mapping(
                 {"positioning": "Automation", "skills": [], "preferred_tasks": ["Bots"]}
             )
+
+    def test_accepts_user_created_search_track_when_legacy_fields_are_empty(self) -> None:
+        profile = CandidateProfile(
+            positioning="AI Automation",
+            skills=(),
+            preferred_tasks=(),
+            avoid_tasks=(),
+            preferences=(),
+            search_tracks=(
+                SearchTrack(
+                    track_id="automation",
+                    name="Automation work",
+                    target_description="Automate business processes",
+                    roles_and_signals=("business automation",),
+                    skills_and_experience=(),
+                    tasks_and_outcomes=(),
+                    locations=(),
+                ),
+            ),
+        )
+
+        self.assertEqual(profile.active_search_tracks[0].name, "Automation work")
 
 
 if __name__ == "__main__":

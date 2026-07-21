@@ -1,158 +1,132 @@
-# AI Career Agent
+# AI Career Agent / JobMonitor
 
-AI Career Agent is a self-hosted Python service that continuously collects job
-opportunities, normalizes them, scores them against an owner-defined profile,
-and sends only suitable results to Telegram.
+Self-hosted Python service that continuously discovers job opportunities, removes duplicates, evaluates each listing against user-defined career directions with OpenAI, and sends concise recommendations to Telegram.
 
-The application is designed for a single owner per installation. API keys,
-Telegram details, the candidate profile, logs, and the SQLite database remain
-outside the repository.
+This repository documents the full product evolution: the original n8n prototype is preserved under the `v0.1-n8n-prototype` tag, while the current V1 is an independent Python application designed for continuous Docker deployment.
 
-## Current Version
+## What It Demonstrates
 
-Version `0.3` is a production-oriented rewrite of the original n8n prototype.
-The prototype remains available in Git history and under the
-`v0.1-n8n-prototype` tag.
+- product design around a real job-search workflow;
+- modular integrations with official APIs, RSS feeds, and public job-board endpoints;
+- typed normalization into a shared opportunity model;
+- semantic AI matching against multiple user-created search directions;
+- persistent global deduplication across sources;
+- retry-safe Telegram delivery and profile onboarding;
+- independent provider schedules and fault isolation;
+- SQLite migrations, health checks, operational logging, and short-retention backups;
+- privacy-aware configuration with credentials and user data kept outside Git.
 
-See [Project evolution](docs/PROJECT_EVOLUTION.md) for the architectural changes.
+## Current V1
 
-## Features
+The production runtime integrates:
 
-- Habr Career RSS, Remote OK API, and We Work Remotely RSS providers
-- one normalized `Opportunity` model for every source
-- persistent deduplication in SQLite
-- structured OpenAI analysis against a Telegram-managed candidate profile
-- score-based Telegram delivery with retry-safe notification history
-- independent enable flags and polling intervals for each provider
-- provider isolation: one failed source does not stop the remaining pipeline
-- rotating logs, service heartbeats, health checks, and Docker deployment
-- 76 automated tests
+- Habr Career;
+- Remote OK;
+- We Work Remotely;
+- Remotive;
+- Jobicy;
+- Работа России;
+- selected Greenhouse job boards, each treated as an independent source.
+
+The Telegram bot lets the user create common preferences and one or more free-text search directions. A direction can describe a profession, project type, skills, experience, preferred tasks, geography, and work format. The AI compares every opportunity with all enabled directions and returns one decision:
+
+- `priority` — strong, evidence-based match;
+- `review` — plausible or adjacent opportunity worth checking;
+- `archive` — no meaningful match or a hard exclusion.
 
 ## Processing Flow
 
 ```mermaid
 flowchart LR
-    H[Habr Career] --> N[Normalize and deduplicate]
-    R[Remote OK] --> N
-    W[We Work Remotely] --> N
-    N --> D[(SQLite)]
-    D --> A[OpenAI analysis]
-    A --> F[Score filter]
-    F --> T[Telegram]
+    S[Official APIs and feeds] --> N[Normalize]
+    N --> D[Global deduplication]
+    D --> DB[(SQLite)]
+    DB --> AI[OpenAI semantic analysis]
+    P[Telegram-managed profile] --> AI
+    AI --> Q{Decision}
+    Q -->|priority or review| T[Telegram card]
+    Q -->|archive| DB
 ```
 
-The worker wakes up on a common schedule, while SQLite stores the independent
-polling state for each provider. Restarting the process does not reset that
-state or trigger unnecessary source requests.
+Each provider has its own enable flag, polling interval, persistent run state, and error boundary. A failure or rate limit in one provider does not stop the others.
 
-## Requirements
+## Telegram Result
 
-- Docker with Docker Compose, or Python 3.12+
-- an OpenAI API key
-- a Telegram bot token and private chat ID
+A recommendation card contains only decision-ready information:
 
-Each installation must use credentials owned by its operator. Do not reuse
-credentials from another installation.
+- match percentage and selected search direction;
+- title, company, employment type, work format, and location;
+- salary when the source provides it;
+- concise reasons, risks, and required application actions;
+- an editable response draft;
+- source, publication date, and direct vacancy link.
 
-## Quick Start with Docker
+## Reliability
 
-1. Clone the repository and enter its directory.
-2. Create the local configuration:
+- SQLite remembers processed listings and prevents repeat notifications.
+- Notification state makes Telegram delivery retry-safe.
+- Interrupted runs and AI claims are recovered after restart.
+- OpenAI input/output token usage is stored for operational cost analysis.
+- Docker health checks cover the worker and profile bot.
+- Automated tests cover providers, normalization, deduplication, storage, AI contracts, profile flows, scheduling, and delivery.
 
-   ```bash
-   cp .env.example .env
-   ```
+Current verification: **140 automated tests**.
 
-3. Fill in at least:
+## Quick Start
 
-   ```text
-   OPENAI_API_KEY=
-   OPENAI_MODEL=
-   TELEGRAM_TOKEN=
-   TELEGRAM_CHAT_ID=
-   CHECK_INTERVAL_SECONDS=300
-   MIN_AI_SCORE=70
-   ```
+Requirements: Docker Compose, an OpenAI API key, and a Telegram bot token.
 
-4. Build and start both services:
-
-   ```bash
-   docker compose up -d --build
-   docker compose ps
-   ```
-
-5. Send `/start` to the configured Telegram bot and complete the profile form.
-
-6. Inspect service logs when needed:
-
-   ```bash
-   docker compose logs --tail 100 worker profile-bot
-   ```
-
-The worker runs the full collection, analysis, and delivery cycle. The
-profile-bot handles `/start`, `/profile`, `/edit_profile`, and `/skills`.
-
-## Provider Configuration
-
-All three providers are enabled by default:
-
-```text
-HABR_ENABLED=true
-HABR_POLL_INTERVAL_SECONDS=300
-REMOTEOK_ENABLED=true
-REMOTEOK_POLL_INTERVAL_SECONDS=900
-WWR_ENABLED=true
-WWR_POLL_INTERVAL_SECONDS=900
+```bash
+git clone https://github.com/rinatshaidi/ai-career-agent.git
+cd ai-career-agent
+cp .env.example .env
+docker compose up -d --build
+docker compose ps
 ```
 
-Provider intervals cannot be lower than 60 seconds. A provider can be disabled
-without modifying Python code.
+Fill `.env` with credentials owned by the installation operator. Then send `/start` to the bot and complete the profile questionnaire.
 
-## Local Development
+For local development:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
 python -m unittest discover -s tests
-python worker.py --once
 ```
 
-On Windows, activate the virtual environment with
-`.venv\Scripts\Activate.ps1`.
+On Windows, activate the environment with `.venv\Scripts\Activate.ps1`.
 
-## Data and Security
+## Privacy And Security
 
-The following files must never be committed:
+The repository contains no production credentials or completed user profile. Every installation supplies its own:
 
-- `.env` and other local environment files
-- SQLite databases and WAL files
-- the completed candidate profile
-- logs, deployment archives, and backups
-- API keys, Telegram tokens, and chat identifiers
+- `.env` values;
+- OpenAI and Telegram credentials;
+- SQLite database;
+- profile answers;
+- logs and backups.
 
-The supplied `.env.example` and profile example contain placeholders only.
-Review [DEPLOYMENT.md](DEPLOYMENT.md) before a VPS deployment.
+The `.gitignore` excludes these files. The provided configuration and profile files contain placeholders only.
 
 ## Repository Layout
 
 ```text
-models/       Domain models
-providers/    Source integrations
-services/     AI, Telegram, scheduling, and pipeline logic
-storage/      SQLite repository and persistent state
+models/       Typed domain and AI result models
+providers/    Independent source integrations
+services/     Pipeline, AI, Telegram, scheduling, and profile flows
+storage/      SQLite schema, migrations, state, and deduplication
+scripts/      Deployment, smoke-test, audit, and backup helpers
 profiles/     Non-personal profile example
 tests/        Automated test suite
-scripts/      Deployment helper
+docs/         Project evolution and supporting documentation
 ```
+
+See [SPECIFICATION.md](SPECIFICATION.md) for product requirements, [DEPLOYMENT.md](DEPLOYMENT.md) for operations, and [Project evolution](docs/PROJECT_EVOLUTION.md) for the n8n-to-Python transition.
 
 ## Scope
 
-This release does not perform automatic job applications. Telegram channels,
-Kwork, Workzilla, and unofficial scraping are intentionally excluded. New
-providers should use an official API or feed and implement the common provider
-contract.
+V1 finds and evaluates opportunities; it does not apply automatically. Closed platforms and unofficial scraping are intentionally excluded until a stable and permitted integration method exists.
 
 ## License
 

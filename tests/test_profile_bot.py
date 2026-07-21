@@ -10,9 +10,9 @@ from storage import OpportunityRepository
 
 class FakeTelegramClient:
     def __init__(self) -> None:
-        self.messages = []
-        self.answered_callbacks = []
-        self.updates = []
+        self.messages: list[tuple[str, str, dict | None]] = []
+        self.answered_callbacks: list[str] = []
+        self.updates: list[dict] = []
         self.requested_offset = None
 
     def get_updates(self, *, offset, timeout):
@@ -27,20 +27,13 @@ class FakeTelegramClient:
 
 
 def message(update_id: int, chat_id: str, text: str) -> dict:
-    return {
-        "update_id": update_id,
-        "message": {"chat": {"id": int(chat_id)}, "text": text},
-    }
+    return {"update_id": update_id, "message": {"chat": {"id": int(chat_id)}, "text": text}}
 
 
 def callback(update_id: int, chat_id: str, data: str) -> dict:
     return {
         "update_id": update_id,
-        "callback_query": {
-            "id": f"callback-{update_id}",
-            "data": data,
-            "message": {"chat": {"id": int(chat_id)}},
-        },
+        "callback_query": {"id": f"callback-{update_id}", "data": data, "message": {"chat": {"id": int(chat_id)}}},
     }
 
 
@@ -54,11 +47,7 @@ class TelegramProfileBotTests(unittest.TestCase):
         self.repository = OpportunityRepository(self.database_path)
         self.repository.initialize()
         self.client = FakeTelegramClient()
-        self.bot = TelegramProfileBot(
-            self.repository,
-            self.client,
-            allowed_chat_id=self.chat_id,
-        )
+        self.bot = TelegramProfileBot(self.repository, self.client, allowed_chat_id=self.chat_id)
 
     def tearDown(self) -> None:
         for suffix in ("", "-shm", "-wal"):
@@ -66,32 +55,72 @@ class TelegramProfileBotTests(unittest.TestCase):
             if path.exists():
                 path.unlink()
 
-    def test_completes_and_saves_profile_questionnaire(self) -> None:
-        updates = [
-            message(1, self.chat_id, "/start"),
-            callback(2, self.chat_id, "profile:start"),
-            message(3, self.chat_id, "AI automation специалист"),
-            message(4, self.chat_id, "n8n\nAPI integrations\nTelegram bots"),
-            message(5, self.chat_id, "Автоматизация бизнеса\nНебольшие проекты"),
-            message(6, self.chat_id, "Холодные продажи"),
-            message(7, self.chat_id, "Удалённо\nОт 10 000 рублей"),
-            callback(8, self.chat_id, "profile:confirm"),
+    def test_completes_and_saves_two_free_text_search_tracks(self) -> None:
+        self.bot.handle_update(callback(1, self.chat_id, "profile:start"))
+        answers = [
+            "Business automation and project delivery",
+            "Russian and English",
+            "Cold sales",
+            "Automation consulting",
+            "Automation projects for small businesses",
+            "automation specialist; integration engineer",
+            "n8n; APIs; Telegram bots",
+            "design workflows; automate reporting",
+            "Remote; Russia; international market",
+            "junior AI roles",
         ]
-        for update in updates:
-            self.bot.handle_update(update)
+        for update_id, answer in enumerate(answers, start=2):
+            self.bot.handle_update(message(update_id, self.chat_id, answer))
+        self.bot.handle_update(callback(20, self.chat_id, "profile:add_track"))
+        second_track = [
+            "Infrastructure projects",
+            "Commercial development projects",
+            "project development; partnerships",
+            "business development; negotiations",
+            "launch projects; coordinate partners",
+            "Moscow; Russia; relocation",
+            "investment projects",
+        ]
+        for update_id, answer in enumerate(second_track, start=21):
+            self.bot.handle_update(message(update_id, self.chat_id, answer))
+        self.bot.handle_update(callback(30, self.chat_id, "profile:finish_tracks"))
+        self.bot.handle_update(callback(31, self.chat_id, "profile:confirm"))
 
         profile = self.repository.get_user_profile(self.chat_id)
         self.assertIsNotNone(profile)
-        self.assertEqual(profile.positioning, "AI automation специалист")
-        self.assertEqual(profile.skills[0], "n8n")
-        self.assertIn("Удалённо", profile.preferences)
+        assert profile is not None
+        self.assertEqual(len(profile.search_tracks), 2)
+        self.assertEqual(profile.search_tracks[0].name, "Automation consulting")
+        self.assertIn("n8n", profile.search_tracks[0].skills_and_experience)
+        self.assertEqual(profile.search_tracks[1].locations[0], "Moscow")
         self.assertIsNone(self.repository.get_profile_session(self.chat_id))
-        self.assertIn("Профиль сохранён", "\n".join(item[1] for item in self.client.messages))
+
+    def test_required_answer_cannot_be_skipped(self) -> None:
+        self.bot.handle_update(callback(1, self.chat_id, "profile:start"))
+        self.bot.handle_update(callback(2, self.chat_id, "profile:skip"))
+        session = self.repository.get_profile_session(self.chat_id)
+        self.assertIsNotNone(session)
+        assert session is not None
+        self.assertEqual(session.draft["step"], 0)
+        self.assertIn("обязательное", self.client.messages[-1][1])
 
     def test_ignores_another_chat(self) -> None:
         self.bot.handle_update(message(1, "99999", "/start"))
         self.assertEqual(self.client.messages, [])
-        self.assertIsNone(self.repository.get_profile_session("99999"))
+
+    def test_menu_has_profile_and_directions(self) -> None:
+        self.bot.handle_update(message(1, self.chat_id, "/start"))
+        markup = self.client.messages[-1][2]
+        self.assertIsNotNone(markup)
+        assert markup is not None
+        self.assertTrue(markup["is_persistent"])
+        self.assertEqual(markup["keyboard"][0][0]["text"], "Профиль")
+        self.assertEqual(markup["keyboard"][0][1]["text"], "Направления")
+
+    def test_persistent_keyboard_opens_editor(self) -> None:
+        self.bot.handle_update(message(1, self.chat_id, "Изменить профиль"))
+        self.assertIsNotNone(self.repository.get_profile_session(self.chat_id))
+        self.assertIn("Общий профиль", self.client.messages[-1][1])
 
     def test_runner_persists_update_offset(self) -> None:
         self.client.updates = [message(10, self.chat_id, "/start")]

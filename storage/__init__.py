@@ -3,6 +3,7 @@
 from storage.repository import (
     NotificationCandidate,
     OpportunityRepository,
+    OpportunitySource,
     OpportunityStatus,
     ProfileSession,
     SaveBatchResult,
@@ -16,6 +17,7 @@ from storage.repository import (
 __all__ = [
     "NotificationCandidate",
     "OpportunityRepository",
+    "OpportunitySource",
     "OpportunityStatus",
     "ProfileSession",
     "SaveBatchResult",

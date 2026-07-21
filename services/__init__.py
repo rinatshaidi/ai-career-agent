@@ -8,7 +8,7 @@ from services.notification_runner import (
     format_notification,
 )
 from services.pipeline import JobMonitorPipeline, PipelineResult
-from services.profile_bot import ProfileBotRunner, TelegramProfileBot
+from services.profile_bot import BOT_COMMANDS, ProfileBotRunner, TelegramProfileBot
 from services.scheduler import IntervalScheduler
 from services.telegram_client import TelegramAPIError, TelegramBotAPIClient, TelegramClient
 
@@ -17,6 +17,7 @@ __all__ = [
     "AIAnalyzerError",
     "AnalysisRunResult",
     "AnalysisRunner",
+    "BOT_COMMANDS",
     "OpenAIAnalyzer",
     "OpenAIAnalyzerError",
     "NotificationRunResult",

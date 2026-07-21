@@ -72,6 +72,8 @@ def main() -> int:
             minimum_score=settings.min_ai_score,
             retry_policy=retry_policy,
             provider_intervals=configured_provider_intervals(settings),
+            max_pending_ai_queue=settings.max_pending_ai_queue,
+            initial_source_import_limit=settings.source_initial_import_limit,
         )
         def run_pipeline_cycle():
             repository.set_service_heartbeat("worker")

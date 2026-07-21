@@ -24,6 +24,8 @@ class TelegramClient(Protocol):
 
     def answer_callback_query(self, callback_query_id: str) -> None: ...
 
+    def set_my_commands(self, commands: list[dict[str, str]]) -> None: ...
+
 
 @dataclass(slots=True)
 class TelegramBotAPIClient:
@@ -78,6 +80,15 @@ class TelegramBotAPIClient:
 
     def answer_callback_query(self, callback_query_id: str) -> None:
         self._call("answerCallbackQuery", {"callback_query_id": callback_query_id})
+
+    def set_my_commands(self, commands: list[dict[str, str]]) -> None:
+        if not commands or not all(
+            isinstance(command.get("command"), str)
+            and isinstance(command.get("description"), str)
+            for command in commands
+        ):
+            raise ValueError("Telegram commands must contain command and description strings.")
+        self._call("setMyCommands", {"commands": commands})
 
     def _call(
         self,

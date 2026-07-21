@@ -25,6 +25,9 @@ class PipelineResult:
     opportunities_received: int = 0
     opportunities_saved: int = 0
     duplicates_skipped: int = 0
+    opportunities_merged: int = 0
+    opportunities_deferred: int = 0
+    sources_queue_limited: int = 0
     analyses_suitable: int = 0
     analyses_rejected: int = 0
     analyses_failed: int = 0
@@ -47,6 +50,8 @@ class JobMonitorPipeline:
     minimum_score: int
     retry_policy: RetryPolicy
     provider_intervals: Mapping[str, int] = field(default_factory=dict)
+    max_pending_ai_queue: int = 50
+    initial_source_import_limit: int = 20
     sleep: Callable[[float], None] = time.sleep
 
     def run_cycle(self) -> PipelineResult:
@@ -100,12 +105,39 @@ class JobMonitorPipeline:
                 counters = _add(counters, sources_skipped=1)
                 continue
 
+            pending_count = self.repository.count_pending_analysis()
+            if pending_count >= self.max_pending_ai_queue:
+                logger.info(
+                    "Provider deferred source=%s pending_ai=%s queue_limit=%s",
+                    provider.source,
+                    pending_count,
+                    self.max_pending_ai_queue,
+                )
+                counters = _add(
+                    counters,
+                    sources_skipped=1,
+                    sources_queue_limited=1,
+                )
+                continue
+
+            source_state = self.repository.get_source_state(provider.source)
+            initial_run = source_state is None
             source_run_id = self.repository.start_source_run(provider.source)
+            provider_retry_policy = RetryPolicy(
+                attempts=getattr(provider, "retry_attempts", self.retry_policy.attempts),
+                delay_seconds=self.retry_policy.delay_seconds,
+            )
             try:
-                opportunities = retry_call(
-                    provider.fetch,
+                fetch_since = getattr(provider, "fetch_since", None)
+                fetch_operation = (
+                    lambda: fetch_since(
+                        source_state.last_success_at if source_state is not None else None
+                    )
+                ) if callable(fetch_since) else provider.fetch
+                fetched_opportunities = retry_call(
+                    fetch_operation,
                     exceptions=(ProviderError,),
-                    policy=self.retry_policy,
+                    policy=provider_retry_policy,
                     sleep=self.sleep,
                     on_retry=lambda exc, attempt, total, source=provider.source: logger.warning(
                         "Provider retry %s/%s source=%s: %s",
@@ -127,13 +159,24 @@ class JobMonitorPipeline:
                 continue
 
             try:
-                saved = self.repository.add_many(opportunities)
+                opportunities = list(fetched_opportunities)
+                initial_deferred = 0
+                if initial_run and len(opportunities) > self.initial_source_import_limit:
+                    initial_deferred = len(opportunities) - self.initial_source_import_limit
+                    opportunities = opportunities[: self.initial_source_import_limit]
+
+                available_slots = self.max_pending_ai_queue - pending_count
+                saved = self.repository.add_many(
+                    opportunities,
+                    max_new=available_slots,
+                )
+                deferred_count = initial_deferred + saved.deferred_count
             except Exception as exc:
                 self.repository.finish_source_run(
                     source_run_id,
                     provider.source,
                     status="failed",
-                    received_count=len(opportunities),
+                    received_count=len(fetched_opportunities),
                     last_error=str(exc),
                 )
                 raise
@@ -141,23 +184,28 @@ class JobMonitorPipeline:
                 source_run_id,
                 provider.source,
                 status="completed",
-                received_count=len(opportunities),
+                received_count=len(fetched_opportunities),
                 saved_count=saved.inserted_count,
                 duplicate_count=saved.duplicate_count,
+                deferred_count=deferred_count,
             )
             counters = _add(
                 counters,
                 sources_succeeded=1,
-                opportunities_received=len(opportunities),
+                opportunities_received=len(fetched_opportunities),
                 opportunities_saved=saved.inserted_count,
                 duplicates_skipped=saved.duplicate_count,
+                opportunities_merged=saved.merged_count,
+                opportunities_deferred=deferred_count,
             )
             logger.info(
-                "Provider completed source=%s received=%s saved=%s duplicates=%s",
+                "Provider completed source=%s received=%s saved=%s duplicates=%s merged=%s deferred=%s",
                 provider.source,
-                len(opportunities),
+                len(fetched_opportunities),
                 saved.inserted_count,
                 saved.duplicate_count,
+                saved.merged_count,
+                deferred_count,
             )
 
         profile = self.repository.get_user_profile(self.chat_id)

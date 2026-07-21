@@ -3,59 +3,67 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
-from models import CandidateProfile, ProfileError
+from models import CandidateProfile, ProfileError, SearchTrack
 from services.telegram_client import TelegramClient
 from storage import OpportunityRepository, ProfileSession
+
+
+BOT_COMMANDS = [
+    {"command": "start", "description": "Открыть меню JobMonitor"},
+    {"command": "profile", "description": "Посмотреть профиль поиска"},
+    {"command": "directions", "description": "Посмотреть направления поиска"},
+    {"command": "edit_profile", "description": "Изменить профиль поиска"},
+]
+
+PERSISTENT_MENU = {
+    "keyboard": [[{"text": "Профиль"}, {"text": "Направления"}], [{"text": "Изменить профиль"}]],
+    "resize_keyboard": True,
+    "is_persistent": True,
+}
 
 
 @dataclass(frozen=True, slots=True)
 class ProfileQuestion:
     field: str
     prompt: str
-    is_list: bool
-    required: bool = True
+    required: bool
 
 
-QUESTIONS = (
+COMMON_QUESTIONS = (
     ProfileQuestion(
         "positioning",
-        "1/5. Как вы описываете себя как специалиста?\n\nНапример: AI automation специалист с опытом в бизнесе.",
+        "1/3. Коротко опишите опыт, сильные стороны и работу, которая у вас получается лучше всего. Пишите свободно.",
+        True,
+    ),
+    ProfileQuestion(
+        "languages",
+        "2/3. Какие рабочие языки должен учитывать агент? Этот вопрос можно пропустить.",
         False,
     ),
     ProfileQuestion(
-        "skills",
-        "2/5. Какие задачи вы умеете выполнять и какие инструменты используете?\n\nНапишите по одному пункту с новой строки.",
-        True,
+        "stop_conditions",
+        "3/3. Какие предложения точно не нужно показывать? Только жёсткие исключения; вопрос можно пропустить.",
+        False,
     ),
-    ProfileQuestion(
-        "preferred_tasks",
-        "3/5. Какую работу и задачи вы хотите получать?\n\nНапишите по одному пункту с новой строки.",
-        True,
-    ),
-    ProfileQuestion(
-        "avoid_tasks",
-        "4/5. Какую работу не нужно предлагать?\n\nНапишите список или слово «нет».",
-        True,
-        required=False,
-    ),
-    ProfileQuestion(
-        "preferences",
-        "5/5. Укажите важные условия: удалённость, график, языки, география, минимальная оплата.\n\nНапишите по одному условию с новой строки.",
-        True,
-        required=False,
-    ),
+)
+
+TRACK_QUESTIONS = (
+    ProfileQuestion("name", "Назовите это направление поиска. Например: операционное управление, AI-автоматизация или коммерческая недвижимость.", True),
+    ProfileQuestion("target_description", "Какую работу вы хотите находить в этом направлении? Опишите своими словами.", True),
+    ProfileQuestion("roles_and_signals", "Какие роли, фразы или слова в объявлении помогут агенту распознать подходящую возможность?", True),
+    ProfileQuestion("skills_and_experience", "Опишите опыт, навыки, инструменты, отрасли и достижения, относящиеся к этому направлению.", True),
+    ProfileQuestion("tasks_and_outcomes", "За какие задачи или результаты вы готовы отвечать в этом направлении?", True),
+    ProfileQuestion("locations", "Какие города, страны, регионы и форматы работы подходят именно для этого направления?", True),
+    ProfileQuestion("growth_opportunities", "Какие смежные роли или возможности роста тоже стоит показывать? Этот вопрос можно пропустить.", False),
 )
 
 
 class TelegramProfileBot:
-    def __init__(
-        self,
-        repository: OpportunityRepository,
-        client: TelegramClient,
-        *,
-        allowed_chat_id: str | int,
-    ) -> None:
+    """Telegram questionnaire for a free-text profile with multiple search tracks."""
+
+    def __init__(self, repository: OpportunityRepository, client: TelegramClient, *, allowed_chat_id: str | int) -> None:
         self.repository = repository
         self.client = client
         self.allowed_chat_id = str(allowed_chat_id).strip()
@@ -67,7 +75,6 @@ class TelegramProfileBot:
         if isinstance(callback, dict):
             self._handle_callback(callback)
             return
-
         message = update.get("message")
         if not isinstance(message, dict):
             return
@@ -82,22 +89,22 @@ class TelegramProfileBot:
 
     def _handle_message(self, text: str) -> None:
         command = text.split(maxsplit=1)[0].lower()
+        normalized = text.casefold()
         if command == "/start":
             self._send_menu()
             return
-        if command == "/profile":
+        if command == "/profile" or normalized == "профиль":
             self._send_profile()
             return
-        if command in {"/edit_profile", "/skills"}:
+        if command == "/directions" or normalized == "направления":
+            self._send_directions()
+            return
+        if command in {"/edit_profile", "/skills"} or normalized == "изменить профиль":
             self._start_questionnaire()
             return
-
         session = self.repository.get_profile_session(self.allowed_chat_id)
         if session is None:
-            self.client.send_message(
-                self.allowed_chat_id,
-                "Используйте /start, чтобы открыть меню JobMonitor.",
-            )
+            self.client.send_message(self.allowed_chat_id, "Используйте /start, чтобы открыть меню JobMonitor.")
             return
         self._accept_answer(session, text)
 
@@ -114,173 +121,250 @@ class TelegramProfileBot:
             self._start_questionnaire()
         elif data == "profile:view":
             self._send_profile()
+        elif data == "profile:directions":
+            self._send_directions()
+        elif data == "profile:add_track":
+            self._add_search_track()
+        elif data == "profile:finish_tracks":
+            self._send_draft()
         elif data == "profile:confirm":
             self._confirm_profile()
         elif data == "profile:cancel":
             self.repository.delete_profile_session(self.allowed_chat_id)
             self.client.send_message(self.allowed_chat_id, "Заполнение профиля отменено.")
             self._send_menu()
+        elif data == "profile:skip":
+            session = self.repository.get_profile_session(self.allowed_chat_id)
+            if session is not None:
+                self._accept_answer(session, "skip")
 
     def _send_menu(self) -> None:
         profile = self.repository.get_user_profile(self.allowed_chat_id)
-        if profile is None:
-            text = "JobMonitor готов к настройке. Сначала заполните профиль поиска."
-            buttons = [[{"text": "Заполнить профиль", "callback_data": "profile:start"}]]
-        else:
-            text = "Профиль настроен. Его можно посмотреть или изменить."
-            buttons = [
-                [{"text": "Посмотреть профиль", "callback_data": "profile:view"}],
-                [{"text": "Изменить профиль", "callback_data": "profile:edit"}],
-            ]
-        self.client.send_message(
-            self.allowed_chat_id,
-            text,
-            reply_markup={"inline_keyboard": buttons},
+        text = (
+            "JobMonitor готов к настройке. Нажмите «Изменить профиль» в нижнем меню, чтобы заполнить анкету."
+            if profile is None
+            else "Профиль сохранён. В любой момент можно посмотреть направления или заполнить профиль заново."
         )
+        self.client.send_message(self.allowed_chat_id, text, reply_markup=PERSISTENT_MENU)
 
     def _start_questionnaire(self) -> None:
-        self.repository.save_profile_session(self.allowed_chat_id, step=0, draft={})
-        self.client.send_message(self.allowed_chat_id, QUESTIONS[0].prompt)
+        draft = {"phase": "common", "step": 0, "common": {}, "tracks": [], "current_track": {}}
+        self.repository.save_profile_session(self.allowed_chat_id, step=0, draft=draft)
+        self._send_current_question(draft)
+
+    def _add_search_track(self) -> None:
+        session = self.repository.get_profile_session(self.allowed_chat_id)
+        if session is None:
+            self._start_questionnaire()
+            return
+        draft = self._copy_draft(session.draft)
+        draft["phase"] = "track"
+        draft["step"] = 0
+        draft["current_track"] = {}
+        self.repository.save_profile_session(self.allowed_chat_id, step=0, draft=draft)
+        self._send_current_question(draft)
+
+    def _send_current_question(self, draft: dict[str, Any]) -> None:
+        phase = draft.get("phase")
+        questions = COMMON_QUESTIONS if phase == "common" else TRACK_QUESTIONS
+        step = draft.get("step", 0)
+        if not isinstance(step, int) or step >= len(questions):
+            self._send_track_choice()
+            return
+        question = questions[step]
+        prefix = f"Общий профиль {step + 1}/{len(COMMON_QUESTIONS)}" if phase == "common" else f"Направление поиска {step + 1}/{len(TRACK_QUESTIONS)}"
+        markup: dict[str, Any] | None = None
+        if not question.required:
+            markup = {"inline_keyboard": [[{"text": "Пропустить", "callback_data": "profile:skip"}]]}
+        self.client.send_message(self.allowed_chat_id, f"{prefix}. {question.prompt}", reply_markup=markup)
 
     def _accept_answer(self, session: ProfileSession, text: str) -> None:
-        if session.step >= len(QUESTIONS):
-            self.client.send_message(
-                self.allowed_chat_id,
-                "Проверьте профиль и нажмите «Сохранить профиль».",
-            )
+        draft = self._copy_draft(session.draft)
+        phase = draft.get("phase")
+        questions = COMMON_QUESTIONS if phase == "common" else TRACK_QUESTIONS
+        step = draft.get("step", 0)
+        if not isinstance(step, int) or step >= len(questions):
+            self._send_track_choice()
             return
-        question = QUESTIONS[session.step]
-        value: str | list[str]
-        if question.is_list:
-            value = self._parse_list(text)
-            if not value and question.required:
-                self.client.send_message(
-                    self.allowed_chat_id,
-                    "Нужен хотя бы один пункт. Напишите ответ ещё раз.",
-                )
-                return
-        else:
-            value = text.strip()
-            if not value:
-                self.client.send_message(self.allowed_chat_id, "Ответ не может быть пустым.")
-                return
+        question = questions[step]
+        value = self._parse_list(text)
+        if question.required and not value:
+            self.client.send_message(self.allowed_chat_id, "Это обязательное поле. Напишите ответ своими словами.")
+            return
+        target = draft["common"] if phase == "common" else draft["current_track"]
+        target[question.field] = value
+        draft["step"] = step + 1
+        if draft["step"] < len(questions):
+            self.repository.save_profile_session(self.allowed_chat_id, step=draft["step"], draft=draft)
+            self._send_current_question(draft)
+            return
+        if phase == "common":
+            draft["phase"] = "track"
+            draft["step"] = 0
+            draft["current_track"] = {}
+            self.repository.save_profile_session(self.allowed_chat_id, step=0, draft=draft)
+            self._send_current_question(draft)
+            return
+        draft["tracks"].append(draft["current_track"])
+        draft["current_track"] = {}
+        draft["phase"] = "choice"
+        draft["step"] = 0
+        self.repository.save_profile_session(self.allowed_chat_id, step=0, draft=draft)
+        self._send_track_choice()
 
-        draft = dict(session.draft)
-        draft[question.field] = value
-        next_step = session.step + 1
-        self.repository.save_profile_session(
+    def _send_track_choice(self) -> None:
+        session = self.repository.get_profile_session(self.allowed_chat_id)
+        if session is None:
+            return
+        tracks = session.draft.get("tracks", [])
+        count = len(tracks) if isinstance(tracks, list) else 0
+        self.client.send_message(
             self.allowed_chat_id,
-            step=next_step,
-            draft=draft,
+            f"Направлений в черновике: {count}. Добавьте ещё одно направление или завершите профиль.",
+            reply_markup={"inline_keyboard": [
+                [{"text": "+ Добавить направление", "callback_data": "profile:add_track"}],
+                [{"text": "Завершить профиль", "callback_data": "profile:finish_tracks"}],
+            ]},
         )
-        if next_step < len(QUESTIONS):
-            self.client.send_message(self.allowed_chat_id, QUESTIONS[next_step].prompt)
-            return
-        self._send_draft(draft)
 
-    def _send_draft(self, draft: dict[str, Any]) -> None:
+    def _send_draft(self) -> None:
+        session = self.repository.get_profile_session(self.allowed_chat_id)
+        if session is None:
+            return
         try:
-            profile = CandidateProfile.from_mapping(draft)
+            profile = self._profile_from_draft(session.draft)
         except ProfileError as exc:
-            self.client.send_message(self.allowed_chat_id, f"Профиль заполнен некорректно: {exc}")
+            self.client.send_message(self.allowed_chat_id, f"Черновик профиля заполнен некорректно: {exc}")
             return
         self.client.send_message(
             self.allowed_chat_id,
             "Проверьте профиль:\n\n" + self._format_profile(profile),
-            reply_markup={
-                "inline_keyboard": [
-                    [{"text": "Сохранить профиль", "callback_data": "profile:confirm"}],
-                    [{"text": "Заполнить заново", "callback_data": "profile:edit"}],
-                    [{"text": "Отмена", "callback_data": "profile:cancel"}],
-                ]
-            },
+            reply_markup={"inline_keyboard": [
+                [{"text": "Сохранить профиль", "callback_data": "profile:confirm"}],
+                [{"text": "Заполнить заново", "callback_data": "profile:edit"}],
+                [{"text": "Отмена", "callback_data": "profile:cancel"}],
+            ]},
         )
 
     def _confirm_profile(self) -> None:
         session = self.repository.get_profile_session(self.allowed_chat_id)
-        if session is None or session.step < len(QUESTIONS):
+        if session is None:
             self.client.send_message(self.allowed_chat_id, "Нет готового профиля для сохранения.")
             return
         try:
-            profile = CandidateProfile.from_mapping(session.draft)
+            profile = self._profile_from_draft(session.draft)
         except ProfileError as exc:
-            self.client.send_message(self.allowed_chat_id, f"Профиль заполнен некорректно: {exc}")
+            self.client.send_message(self.allowed_chat_id, f"Черновик профиля заполнен некорректно: {exc}")
             return
         self.repository.save_user_profile(self.allowed_chat_id, profile)
         self.repository.delete_profile_session(self.allowed_chat_id)
-        self.client.send_message(
-            self.allowed_chat_id,
-            "Профиль сохранён. JobMonitor может использовать его для AI-анализа.",
-        )
+        self.client.send_message(self.allowed_chat_id, "Профиль сохранён. Агент будет учитывать каждое включённое направление при оценке возможностей.")
         self._send_menu()
 
     def _send_profile(self) -> None:
         profile = self.repository.get_user_profile(self.allowed_chat_id)
         if profile is None:
-            self.client.send_message(
-                self.allowed_chat_id,
-                "Профиль ещё не заполнен.",
-                reply_markup={
-                    "inline_keyboard": [
-                        [{"text": "Заполнить профиль", "callback_data": "profile:start"}]
-                    ]
-                },
-            )
+            self.client.send_message(self.allowed_chat_id, "Профиль ещё не заполнен.", reply_markup={"inline_keyboard": [[{"text": "Заполнить профиль", "callback_data": "profile:start"}]]})
             return
-        self.client.send_message(
-            self.allowed_chat_id,
-            self._format_profile(profile),
-            reply_markup={
-                "inline_keyboard": [
-                    [{"text": "Изменить профиль", "callback_data": "profile:edit"}]
-                ]
-            },
-        )
+        self.client.send_message(self.allowed_chat_id, self._format_profile(profile), reply_markup={"inline_keyboard": [[{"text": "Изменить профиль", "callback_data": "profile:edit"}]]})
+
+    def _send_directions(self) -> None:
+        profile = self.repository.get_user_profile(self.allowed_chat_id)
+        if profile is None or not profile.search_tracks:
+            self.client.send_message(self.allowed_chat_id, "Направления ещё не сохранены. Заполните профиль, чтобы добавить первое.", reply_markup={"inline_keyboard": [[{"text": "Заполнить профиль", "callback_data": "profile:start"}]]})
+            return
+        lines = ["Направления поиска:"]
+        for index, track in enumerate(profile.search_tracks, start=1):
+            status = "включено" if track.enabled else "выключено"
+            lines.append(f"{index}. {track.name} ({status})")
+        self.client.send_message(self.allowed_chat_id, "\n".join(lines), reply_markup={"inline_keyboard": [[{"text": "Изменить профиль", "callback_data": "profile:edit"}]]})
+
+    @staticmethod
+    def _copy_draft(draft: dict[str, Any]) -> dict[str, Any]:
+        common = draft.get("common", {})
+        tracks = draft.get("tracks", [])
+        current_track = draft.get("current_track", {})
+        return {
+            "phase": draft.get("phase", "common"),
+            "step": draft.get("step", 0),
+            "common": {key: list(value) for key, value in common.items()} if isinstance(common, dict) else {},
+            "tracks": [{key: list(value) for key, value in item.items()} for item in tracks if isinstance(item, dict)],
+            "current_track": {key: list(value) for key, value in current_track.items()} if isinstance(current_track, dict) else {},
+        }
 
     @staticmethod
     def _parse_list(text: str) -> list[str]:
-        if text.strip().casefold() in {"нет", "none", "-"}:
+        if text.strip().casefold() in {"no", "none", "-", "skip"}:
             return []
-        parts = re.split(r"[\n,;]+", text)
         return [
-            re.sub(r"^\s*(?:[-•]+|\d+[.)])\s*", "", part).strip()
-            for part in parts
+            re.sub(r"^\s*(?:[-*]+|\d+[.)])\s*", "", part).strip()
+            for part in re.split(r"[\n,;]+", text)
             if part.strip()
         ]
 
     @staticmethod
-    def _format_profile(profile: CandidateProfile) -> str:
-        def section(title: str, values: tuple[str, ...]) -> str:
-            content = "\n".join(f"- {value}" for value in values) if values else "- не указано"
-            return f"{title}:\n{content}"
-
-        return "\n\n".join(
-            (
-                f"Позиционирование:\n{profile.positioning}",
-                section("Навыки и задачи", profile.skills),
-                section("Желаемые задачи", profile.preferred_tasks),
-                section("Не предлагать", profile.avoid_tasks),
-                section("Условия", profile.preferences),
+    def _profile_from_draft(draft: dict[str, Any]) -> CandidateProfile:
+        common = draft.get("common")
+        raw_tracks = draft.get("tracks")
+        if not isinstance(common, dict) or not isinstance(raw_tracks, list) or not raw_tracks:
+            raise ProfileError("Нужно заполнить хотя бы одно направление поиска.")
+        positioning = " ".join(common.get("positioning", [])).strip()
+        if not positioning:
+            raise ProfileError("Нужно описать опыт.")
+        tracks = tuple(
+            SearchTrack(
+                track_id=f"track-{uuid4().hex}",
+                name=" ".join(item.get("name", [])).strip(),
+                target_description=" ".join(item.get("target_description", [])).strip(),
+                roles_and_signals=tuple(item.get("roles_and_signals", [])),
+                skills_and_experience=tuple(item.get("skills_and_experience", [])),
+                tasks_and_outcomes=tuple(item.get("tasks_and_outcomes", [])),
+                locations=tuple(item.get("locations", [])),
+                growth_opportunities=tuple(item.get("growth_opportunities", [])),
             )
+            for item in raw_tracks
+            if isinstance(item, dict)
         )
+        if not tracks:
+            raise ProfileError("Нужно заполнить хотя бы одно направление поиска.")
+        skills = tuple(value for track in tracks for value in track.skills_and_experience)
+        tasks = tuple(value for track in tracks for value in track.tasks_and_outcomes)
+        languages = tuple(common.get("languages", []))
+        exclusions = tuple(common.get("stop_conditions", []))
+        return CandidateProfile(
+            positioning=positioning,
+            skills=skills,
+            preferred_tasks=tasks,
+            avoid_tasks=exclusions,
+            preferences=languages,
+            common_preferences=languages,
+            search_tracks=tracks,
+        )
+
+    @staticmethod
+    def _format_profile(profile: CandidateProfile) -> str:
+        lines = [f"Краткое описание опыта:\n{profile.positioning}", "", "Направления поиска:"]
+        for track in profile.search_tracks:
+            lines.extend((
+                f"- {track.name}",
+                f"  Ищу: {track.target_description}",
+                f"  Города/страны/форматы: {', '.join(track.locations) or 'не указано'}",
+            ))
+        if profile.common_preferences:
+            lines.extend(("", "Языки: " + ", ".join(profile.common_preferences)))
+        if profile.avoid_tasks:
+            lines.extend(("", "Не показывать: " + ", ".join(profile.avoid_tasks)))
+        return "\n".join(lines)
 
 
 class ProfileBotRunner:
-    def __init__(
-        self,
-        repository: OpportunityRepository,
-        client: TelegramClient,
-        handler: TelegramProfileBot,
-    ) -> None:
+    def __init__(self, repository: OpportunityRepository, client: TelegramClient, handler: TelegramProfileBot) -> None:
         self.repository = repository
         self.client = client
         self.handler = handler
 
     def run_once(self, *, timeout: int) -> int:
-        updates = self.client.get_updates(
-            offset=self.repository.get_bot_offset(),
-            timeout=timeout,
-        )
+        updates = self.client.get_updates(offset=self.repository.get_bot_offset(), timeout=timeout)
         for update in updates:
             update_id = update.get("update_id")
             if not isinstance(update_id, int):

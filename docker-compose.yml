@@ -1,7 +1,7 @@
 x-jobmonitor-common: &jobmonitor-common
   build:
     context: .
-  image: jobmonitor:0.3
+  image: jobmonitor:0.13
   env_file:
     - .env
   volumes:

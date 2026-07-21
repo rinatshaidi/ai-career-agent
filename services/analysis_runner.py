@@ -72,10 +72,11 @@ class AnalysisRunner:
             else:
                 rejected += 1
             logger.info(
-                "AI analysis saved for opportunity_id=%s suitable=%s score=%s",
+                "AI analysis saved for opportunity_id=%s suitable=%s score=%s tokens=%s",
                 stored.id,
                 analysis.suitable,
                 analysis.score,
+                analysis.total_tokens,
             )
 
         return AnalysisRunResult(
