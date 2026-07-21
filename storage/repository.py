@@ -10,7 +10,17 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping
 
-from models import AIAnalysis, CandidateProfile, Difficulty, Opportunity, RemoteType
+from models import (
+    AIAnalysis,
+    CandidateProfile,
+    Difficulty,
+    Opportunity,
+    RecommendationCategory,
+    RemoteType,
+    SearchTrack,
+    TrackAssessment,
+)
+from utils.deduplication import canonicalize_url, opportunity_fingerprint
 
 
 class StorageError(RuntimeError):
@@ -30,6 +40,8 @@ class OpportunityStatus(str, Enum):
 class SaveBatchResult:
     inserted: tuple[Opportunity, ...]
     duplicates: tuple[Opportunity, ...]
+    merged: tuple[Opportunity, ...] = ()
+    deferred: tuple[Opportunity, ...] = ()
 
     @property
     def inserted_count(self) -> int:
@@ -38,6 +50,25 @@ class SaveBatchResult:
     @property
     def duplicate_count(self) -> int:
         return len(self.duplicates)
+
+    @property
+    def merged_count(self) -> int:
+        return len(self.merged)
+
+    @property
+    def deferred_count(self) -> int:
+        return len(self.deferred)
+
+
+@dataclass(frozen=True, slots=True)
+class OpportunitySource:
+    opportunity_id: int
+    source: str
+    external_id: str
+    url: str
+    canonical_url: str
+    first_seen_at: datetime
+    last_seen_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +124,7 @@ class SourceState:
     last_received: int
     last_saved: int
     last_duplicates: int
+    last_deferred: int
     updated_at: datetime
 
 
@@ -220,13 +252,15 @@ class OpportunityRepository:
                     received_count INTEGER NOT NULL DEFAULT 0,
                     saved_count INTEGER NOT NULL DEFAULT 0,
                     duplicate_count INTEGER NOT NULL DEFAULT 0,
+                    deferred_count INTEGER NOT NULL DEFAULT 0,
                     last_error TEXT,
                     started_at TEXT NOT NULL,
                     finished_at TEXT,
                     CHECK (status IN ('running', 'completed', 'failed')),
                     CHECK (received_count >= 0),
                     CHECK (saved_count >= 0),
-                    CHECK (duplicate_count >= 0)
+                    CHECK (duplicate_count >= 0),
+                    CHECK (deferred_count >= 0)
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_source_runs_source_started
@@ -241,31 +275,178 @@ class OpportunityRepository:
                     last_received INTEGER NOT NULL DEFAULT 0,
                     last_saved INTEGER NOT NULL DEFAULT 0,
                     last_duplicates INTEGER NOT NULL DEFAULT 0,
+                    last_deferred INTEGER NOT NULL DEFAULT 0,
                     updated_at TEXT NOT NULL,
                     CHECK (last_status IN ('running', 'completed', 'failed')),
                     CHECK (last_received >= 0),
                     CHECK (last_saved >= 0),
-                    CHECK (last_duplicates >= 0)
+                    CHECK (last_duplicates >= 0),
+                    CHECK (last_deferred >= 0)
                 );
                 """
             )
 
-    def add_many(self, opportunities: Iterable[Opportunity]) -> SaveBatchResult:
+            self._ensure_column(connection, "opportunities", "canonical_url", "TEXT")
+            self._ensure_column(connection, "opportunities", "content_fingerprint", "TEXT")
+            self._ensure_column(connection, "user_profiles", "common_preferences_json", "TEXT")
+            self._ensure_column(connection, "ai_analyses", "recommendation", "TEXT")
+            self._ensure_column(connection, "ai_analyses", "primary_track_id", "TEXT")
+            self._ensure_column(connection, "ai_analyses", "primary_track_name", "TEXT")
+            self._ensure_column(connection, "ai_analyses", "match_reasons_json", "TEXT")
+            self._ensure_column(connection, "ai_analyses", "required_actions_json", "TEXT")
+            self._ensure_column(connection, "ai_analyses", "employment_type", "TEXT")
+            self._ensure_column(connection, "ai_analyses", "track_assessments_json", "TEXT")
+            self._ensure_column(connection, "ai_analyses", "input_tokens", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(connection, "ai_analyses", "output_tokens", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(connection, "ai_analyses", "total_tokens", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(
+                connection,
+                "source_runs",
+                "deferred_count",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                connection,
+                "source_states",
+                "last_deferred",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            connection.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS idx_opportunities_canonical_url
+                    ON opportunities (canonical_url);
+                CREATE INDEX IF NOT EXISTS idx_opportunities_content_fingerprint
+                    ON opportunities (content_fingerprint);
+
+                CREATE TABLE IF NOT EXISTS opportunity_sources (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    opportunity_id INTEGER NOT NULL,
+                    source TEXT NOT NULL,
+                    external_id TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    canonical_url TEXT NOT NULL,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    FOREIGN KEY (opportunity_id) REFERENCES opportunities(id) ON DELETE CASCADE,
+                    UNIQUE (source, external_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_opportunity_sources_opportunity
+                    ON opportunity_sources (opportunity_id);
+                CREATE INDEX IF NOT EXISTS idx_opportunity_sources_canonical_url
+                    ON opportunity_sources (canonical_url);
+
+                CREATE TABLE IF NOT EXISTS profile_directions (
+                    chat_id TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    details_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (chat_id, direction),
+                    FOREIGN KEY (chat_id) REFERENCES user_profiles(chat_id) ON DELETE CASCADE,
+                    CHECK (direction IN ('ai_automation', 'infrastructure_business_projects'))
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_profile_directions_chat_id
+                    ON profile_directions (chat_id);
+
+                CREATE TABLE IF NOT EXISTS profile_search_tracks (
+                    chat_id TEXT NOT NULL,
+                    track_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    details_json TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (chat_id, track_id),
+                    FOREIGN KEY (chat_id) REFERENCES user_profiles(chat_id) ON DELETE CASCADE,
+                    CHECK (enabled IN (0, 1))
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_profile_search_tracks_chat_id
+                    ON profile_search_tracks (chat_id, enabled);
+                """
+            )
+            self._migrate_legacy_profile_directions(connection)
+            self._backfill_opportunity_identity(connection)
+
+    def add_many(
+        self,
+        opportunities: Iterable[Opportunity],
+        *,
+        max_new: int | None = None,
+    ) -> SaveBatchResult:
+        if max_new is not None and max_new < 0:
+            raise ValueError("max_new cannot be negative.")
         inserted: list[Opportunity] = []
         duplicates: list[Opportunity] = []
+        merged: list[Opportunity] = []
+        deferred: list[Opportunity] = []
         now = datetime.now(timezone.utc).isoformat()
 
         with self._connect() as connection:
             for opportunity in opportunities:
+                canonical_url = canonicalize_url(opportunity.url)
+                fingerprint = opportunity_fingerprint(opportunity)
+                known_source = connection.execute(
+                    """
+                    SELECT opportunity_id FROM opportunity_sources
+                    WHERE source = ? AND external_id = ?
+                    """,
+                    (opportunity.source, opportunity.external_id),
+                ).fetchone()
+                if known_source is not None:
+                    connection.execute(
+                        """
+                        UPDATE opportunity_sources
+                        SET url = ?, canonical_url = ?, last_seen_at = ?
+                        WHERE source = ? AND external_id = ?
+                        """,
+                        (
+                            opportunity.url,
+                            canonical_url,
+                            now,
+                            opportunity.source,
+                            opportunity.external_id,
+                        ),
+                    )
+                    duplicates.append(opportunity)
+                    continue
+
+                existing = connection.execute(
+                    """
+                    SELECT id FROM opportunities
+                    WHERE canonical_url = ? OR content_fingerprint = ?
+                    ORDER BY CASE WHEN canonical_url = ? THEN 0 ELSE 1 END, id ASC
+                    LIMIT 1
+                    """,
+                    (canonical_url, fingerprint, canonical_url),
+                ).fetchone()
+                if existing is not None:
+                    self._insert_opportunity_source(
+                        connection,
+                        opportunity_id=int(existing["id"]),
+                        opportunity=opportunity,
+                        canonical_url=canonical_url,
+                        seen_at=now,
+                    )
+                    duplicates.append(opportunity)
+                    merged.append(opportunity)
+                    continue
+
+                if max_new is not None and len(inserted) >= max_new:
+                    deferred.append(opportunity)
+                    continue
+
                 cursor = connection.execute(
                     """
                     INSERT OR IGNORE INTO opportunities (
                         source, external_id, title, description, url,
                         company_name, location, remote_type,
                         salary_from, salary_to, currency,
-                        published_at, collected_at, status,
-                        created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        published_at, collected_at, status, canonical_url,
+                        content_fingerprint, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         opportunity.source,
@@ -282,16 +463,30 @@ class OpportunityRepository:
                         opportunity.published_at.isoformat() if opportunity.published_at else None,
                         opportunity.collected_at.isoformat(),
                         OpportunityStatus.NEW.value,
+                        canonical_url,
+                        fingerprint,
                         now,
                         now,
                     ),
                 )
                 if cursor.rowcount == 1:
                     inserted.append(opportunity)
+                    self._insert_opportunity_source(
+                        connection,
+                        opportunity_id=int(cursor.lastrowid),
+                        opportunity=opportunity,
+                        canonical_url=canonical_url,
+                        seen_at=now,
+                    )
                 else:
                     duplicates.append(opportunity)
 
-        return SaveBatchResult(tuple(inserted), tuple(duplicates))
+        return SaveBatchResult(
+            tuple(inserted),
+            tuple(duplicates),
+            tuple(merged),
+            tuple(deferred),
+        )
 
     def get_by_status(
         self,
@@ -379,8 +574,11 @@ class OpportunityRepository:
         if not model:
             raise ValueError("model cannot be empty.")
         now = datetime.now(timezone.utc).isoformat()
+        recommendation = analysis.recommendation
         final_status = (
-            OpportunityStatus.ANALYZED if analysis.suitable else OpportunityStatus.REJECTED
+            OpportunityStatus.REJECTED
+            if recommendation is RecommendationCategory.ARCHIVE or not analysis.suitable
+            else OpportunityStatus.ANALYZED
         )
         with self._connect() as connection:
             cursor = connection.execute(
@@ -399,8 +597,11 @@ class OpportunityRepository:
                 INSERT INTO ai_analyses (
                     opportunity_id, model, suitable, score, summary,
                     estimated_effort, difficulty, risks_json, action_plan_json,
-                    application_draft, missing_information_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    application_draft, missing_information_json, recommendation,
+                    primary_track_id, primary_track_name, match_reasons_json,
+                    required_actions_json, employment_type, track_assessments_json,
+                    input_tokens, output_tokens, total_tokens, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(opportunity_id) DO UPDATE SET
                     model = excluded.model,
                     suitable = excluded.suitable,
@@ -412,6 +613,16 @@ class OpportunityRepository:
                     action_plan_json = excluded.action_plan_json,
                     application_draft = excluded.application_draft,
                     missing_information_json = excluded.missing_information_json,
+                    recommendation = excluded.recommendation,
+                    primary_track_id = excluded.primary_track_id,
+                    primary_track_name = excluded.primary_track_name,
+                    match_reasons_json = excluded.match_reasons_json,
+                    required_actions_json = excluded.required_actions_json,
+                    employment_type = excluded.employment_type,
+                    track_assessments_json = excluded.track_assessments_json,
+                    input_tokens = excluded.input_tokens,
+                    output_tokens = excluded.output_tokens,
+                    total_tokens = excluded.total_tokens,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -426,6 +637,19 @@ class OpportunityRepository:
                     json.dumps(analysis.action_plan, ensure_ascii=False),
                     analysis.application_draft,
                     json.dumps(analysis.missing_information, ensure_ascii=False),
+                    recommendation.value if recommendation else None,
+                    analysis.primary_track_id,
+                    analysis.primary_track_name,
+                    json.dumps(analysis.match_reasons, ensure_ascii=False),
+                    json.dumps(analysis.required_actions, ensure_ascii=False),
+                    analysis.employment_type,
+                    json.dumps(
+                        [item.to_dict() for item in analysis.track_assessments],
+                        ensure_ascii=False,
+                    ),
+                    analysis.input_tokens,
+                    analysis.output_tokens,
+                    analysis.total_tokens,
                     now,
                     now,
                 ),
@@ -447,6 +671,8 @@ class OpportunityRepository:
             ).fetchone()
         if row is None:
             return None
+        recommendation_raw = row["recommendation"]
+        track_assessments_raw = row["track_assessments_json"]
         analysis = AIAnalysis(
             suitable=bool(row["suitable"]),
             score=row["score"],
@@ -457,6 +683,23 @@ class OpportunityRepository:
             action_plan=tuple(json.loads(row["action_plan_json"])),
             application_draft=row["application_draft"],
             missing_information=tuple(json.loads(row["missing_information_json"])),
+            recommendation=(
+                RecommendationCategory(recommendation_raw)
+                if recommendation_raw
+                else None
+            ),
+            primary_track_id=row["primary_track_id"],
+            primary_track_name=row["primary_track_name"],
+            match_reasons=tuple(json.loads(row["match_reasons_json"] or "[]")),
+            required_actions=tuple(json.loads(row["required_actions_json"] or "[]")),
+            employment_type=row["employment_type"] or "не указана",
+            track_assessments=tuple(
+                TrackAssessment.from_mapping(item)
+                for item in json.loads(track_assessments_raw or "[]")
+            ),
+            input_tokens=row["input_tokens"],
+            output_tokens=row["output_tokens"],
+            total_tokens=row["total_tokens"],
         )
         return StoredAnalysis(
             opportunity_id=row["opportunity_id"],
@@ -504,8 +747,14 @@ class OpportunityRepository:
                 FROM opportunities AS o
                 JOIN ai_analyses AS a ON a.opportunity_id = o.id
                 WHERE o.status = 'analyzed'
-                  AND a.suitable = 1
-                  AND a.score >= ?
+                  AND (
+                      a.recommendation IN ('priority', 'review')
+                      OR (
+                          a.recommendation IS NULL
+                          AND a.suitable = 1
+                          AND a.score >= ?
+                      )
+                  )
                 """,
                 (now_text, now_text, minimum_score),
             )
@@ -517,9 +766,22 @@ class OpportunityRepository:
                 JOIN ai_analyses AS a ON a.opportunity_id = o.id
                 WHERE n.status IN ('pending', 'failed')
                   AND o.status = 'analyzed'
-                  AND a.suitable = 1
-                  AND a.score >= ?
-                ORDER BY a.score DESC, n.created_at ASC
+                  AND (
+                      a.recommendation IN ('priority', 'review')
+                      OR (
+                          a.recommendation IS NULL
+                          AND a.suitable = 1
+                          AND a.score >= ?
+                      )
+                  )
+                ORDER BY
+                    CASE a.recommendation
+                        WHEN 'priority' THEN 0
+                        WHEN 'review' THEN 1
+                        ELSE 2
+                    END,
+                    a.score DESC,
+                    n.created_at ASC
                 LIMIT ?
                 """,
                 (minimum_score, limit),
@@ -607,14 +869,16 @@ class OpportunityRepository:
                 """
                 INSERT INTO user_profiles (
                     chat_id, positioning, skills_json, preferred_tasks_json,
-                    avoid_tasks_json, preferences_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    avoid_tasks_json, preferences_json, common_preferences_json,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(chat_id) DO UPDATE SET
                     positioning = excluded.positioning,
                     skills_json = excluded.skills_json,
                     preferred_tasks_json = excluded.preferred_tasks_json,
                     avoid_tasks_json = excluded.avoid_tasks_json,
                     preferences_json = excluded.preferences_json,
+                    common_preferences_json = excluded.common_preferences_json,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -624,10 +888,32 @@ class OpportunityRepository:
                     json.dumps(profile.preferred_tasks, ensure_ascii=False),
                     json.dumps(profile.avoid_tasks, ensure_ascii=False),
                     json.dumps(profile.preferences, ensure_ascii=False),
+                    json.dumps(profile.common_preferences, ensure_ascii=False),
                     now,
                     now,
                 ),
             )
+            connection.execute(
+                "DELETE FROM profile_search_tracks WHERE chat_id = ?",
+                (normalized_chat_id,),
+            )
+            for track in profile.search_tracks:
+                connection.execute(
+                    """
+                    INSERT INTO profile_search_tracks (
+                        chat_id, track_id, name, details_json, enabled, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        normalized_chat_id,
+                        track.track_id,
+                        track.name,
+                        json.dumps(track.to_dict(), ensure_ascii=False),
+                        int(track.enabled),
+                        now,
+                        now,
+                    ),
+                )
 
     def get_user_profile(self, chat_id: str | int) -> CandidateProfile | None:
         with self._connect() as connection:
@@ -637,12 +923,47 @@ class OpportunityRepository:
             ).fetchone()
         if row is None:
             return None
+        with self._connect() as connection:
+            track_rows = connection.execute(
+                """
+                SELECT track_id, name, details_json, enabled
+                FROM profile_search_tracks
+                WHERE chat_id = ?
+                ORDER BY rowid ASC
+                """,
+                (str(chat_id).strip(),),
+            ).fetchall()
+        search_tracks: list[SearchTrack] = []
+        for track_row in track_rows:
+            try:
+                details = json.loads(track_row["details_json"])
+            except json.JSONDecodeError as exc:
+                raise StorageError("Stored search track contains invalid JSON.") from exc
+            if not isinstance(details, dict):
+                raise StorageError("Stored search track must be a JSON object.")
+            details["track_id"] = track_row["track_id"]
+            details["name"] = track_row["name"]
+            details["enabled"] = bool(track_row["enabled"])
+            try:
+                search_tracks.append(SearchTrack.from_mapping(details))
+            except ValueError as exc:
+                raise StorageError("Stored search track is invalid.") from exc
+        common_preferences_raw = row["common_preferences_json"]
+        if common_preferences_raw is None:
+            common_preferences: tuple[str, ...] = ()
+        else:
+            try:
+                common_preferences = tuple(json.loads(common_preferences_raw))
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise StorageError("Stored common profile preferences are invalid.") from exc
         return CandidateProfile(
             positioning=row["positioning"],
             skills=tuple(json.loads(row["skills_json"])),
             preferred_tasks=tuple(json.loads(row["preferred_tasks_json"])),
             avoid_tasks=tuple(json.loads(row["avoid_tasks_json"])),
             preferences=tuple(json.loads(row["preferences_json"])),
+            common_preferences=common_preferences,
+            search_tracks=tuple(search_tracks),
         )
 
     def save_profile_session(
@@ -811,13 +1132,14 @@ class OpportunityRepository:
         received_count: int = 0,
         saved_count: int = 0,
         duplicate_count: int = 0,
+        deferred_count: int = 0,
         last_error: str | None = None,
         finished_at: datetime | None = None,
     ) -> None:
         source = self._source_name(source)
         if status not in {"completed", "failed"}:
             raise ValueError("Finished source run status must be completed or failed.")
-        counts = (received_count, saved_count, duplicate_count)
+        counts = (received_count, saved_count, duplicate_count, deferred_count)
         if any(value < 0 for value in counts):
             raise ValueError("Source run counters cannot be negative.")
         finished = self._aware_utc(finished_at).isoformat()
@@ -827,7 +1149,7 @@ class OpportunityRepository:
                 """
                 UPDATE source_runs
                 SET status = ?, received_count = ?, saved_count = ?,
-                    duplicate_count = ?, last_error = ?, finished_at = ?
+                    duplicate_count = ?, deferred_count = ?, last_error = ?, finished_at = ?
                 WHERE id = ? AND source = ? AND status = 'running'
                 """,
                 (
@@ -835,6 +1157,7 @@ class OpportunityRepository:
                     received_count,
                     saved_count,
                     duplicate_count,
+                    deferred_count,
                     error,
                     finished,
                     run_id,
@@ -848,7 +1171,7 @@ class OpportunityRepository:
                 UPDATE source_states
                 SET last_success_at = CASE WHEN ? = 'completed' THEN ? ELSE last_success_at END,
                     last_status = ?, last_error = ?, last_received = ?,
-                    last_saved = ?, last_duplicates = ?, updated_at = ?
+                    last_saved = ?, last_duplicates = ?, last_deferred = ?, updated_at = ?
                 WHERE source = ?
                 """,
                 (
@@ -859,6 +1182,7 @@ class OpportunityRepository:
                     received_count,
                     saved_count,
                     duplicate_count,
+                    deferred_count,
                     finished,
                     source,
                 ),
@@ -914,6 +1238,7 @@ class OpportunityRepository:
             last_received=row["last_received"],
             last_saved=row["last_saved"],
             last_duplicates=row["last_duplicates"],
+            last_deferred=row["last_deferred"],
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
 
@@ -1019,6 +1344,184 @@ class OpportunityRepository:
         with self._connect() as connection:
             row = connection.execute("SELECT COUNT(*) AS count FROM opportunities").fetchone()
         return int(row["count"])
+
+    def count_pending_analysis(self) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM opportunities WHERE status = ?",
+                (OpportunityStatus.NEW.value,),
+            ).fetchone()
+        return int(row["count"])
+
+    def get_opportunity_sources(self, opportunity_id: int) -> list[OpportunitySource]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT opportunity_id, source, external_id, url, canonical_url,
+                       first_seen_at, last_seen_at
+                FROM opportunity_sources
+                WHERE opportunity_id = ?
+                ORDER BY first_seen_at ASC, id ASC
+                """,
+                (opportunity_id,),
+            ).fetchall()
+        return [
+            OpportunitySource(
+                opportunity_id=row["opportunity_id"],
+                source=row["source"],
+                external_id=row["external_id"],
+                url=row["url"],
+                canonical_url=row["canonical_url"],
+                first_seen_at=datetime.fromisoformat(row["first_seen_at"]),
+                last_seen_at=datetime.fromisoformat(row["last_seen_at"]),
+            )
+            for row in rows
+        ]
+
+    @staticmethod
+    def _ensure_column(
+        connection: sqlite3.Connection,
+        table: str,
+        column: str,
+        definition: str,
+    ) -> None:
+        columns = {
+            row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in columns:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    @staticmethod
+    def _migrate_legacy_profile_directions(connection: sqlite3.Connection) -> None:
+        """Preserve Block 9.1 profiles while replacing fixed directions with free tracks."""
+        rows = connection.execute(
+            """
+            SELECT legacy.chat_id, legacy.direction, legacy.details_json,
+                   legacy.created_at, legacy.updated_at
+            FROM profile_directions AS legacy
+            WHERE NOT EXISTS (
+                SELECT 1 FROM profile_search_tracks AS tracks
+                WHERE tracks.chat_id = legacy.chat_id
+            )
+            ORDER BY legacy.chat_id ASC, legacy.direction ASC
+            """
+        ).fetchall()
+        names = {
+            "ai_automation": "AI Automation",
+            "infrastructure_business_projects": "Infrastructure & Business Projects",
+        }
+        for row in rows:
+            try:
+                legacy = json.loads(row["details_json"])
+            except json.JSONDecodeError as exc:
+                raise StorageError("Legacy profile direction contains invalid JSON.") from exc
+            if not isinstance(legacy, dict):
+                raise StorageError("Legacy profile direction must be a JSON object.")
+            direction = row["direction"]
+            track_id = f"legacy-{direction}"
+            details = {
+                "track_id": track_id,
+                "name": names.get(direction, direction.replace("_", " ").title()),
+                "target_description": names.get(direction, direction.replace("_", " ").title()),
+                "roles_and_signals": legacy.get("matching_signals", []),
+                "skills_and_experience": legacy.get("skills", []),
+                "tasks_and_outcomes": legacy.get("task_outcomes", []),
+                "locations": [],
+                "work_formats": legacy.get("role_preferences", []),
+                "growth_opportunities": legacy.get("growth_opportunities", []),
+                "enabled": True,
+            }
+            connection.execute(
+                """
+                INSERT INTO profile_search_tracks (
+                    chat_id, track_id, name, details_json, enabled, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 1, ?, ?)
+                """,
+                (
+                    row["chat_id"],
+                    track_id,
+                    details["name"],
+                    json.dumps(details, ensure_ascii=False),
+                    row["created_at"],
+                    row["updated_at"],
+                ),
+            )
+
+    @staticmethod
+    def _insert_opportunity_source(
+        connection: sqlite3.Connection,
+        *,
+        opportunity_id: int,
+        opportunity: Opportunity,
+        canonical_url: str,
+        seen_at: str,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO opportunity_sources (
+                opportunity_id, source, external_id, url, canonical_url,
+                first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                opportunity_id,
+                opportunity.source,
+                opportunity.external_id,
+                opportunity.url,
+                canonical_url,
+                seen_at,
+                seen_at,
+            ),
+        )
+
+    @staticmethod
+    def _backfill_opportunity_identity(connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            """
+            SELECT * FROM opportunities
+            WHERE canonical_url IS NULL OR content_fingerprint IS NULL
+               OR NOT EXISTS (
+                   SELECT 1 FROM opportunity_sources AS source
+                   WHERE source.source = opportunities.source
+                     AND source.external_id = opportunities.external_id
+               )
+            ORDER BY id ASC
+            """
+        ).fetchall()
+        for row in rows:
+            opportunity = OpportunityRepository._to_stored_opportunity(row).opportunity
+            canonical_url = canonicalize_url(opportunity.url)
+            fingerprint = opportunity_fingerprint(opportunity)
+            connection.execute(
+                """
+                UPDATE opportunities
+                SET canonical_url = ?, content_fingerprint = ?
+                WHERE id = ?
+                """,
+                (canonical_url, fingerprint, row["id"]),
+            )
+            connection.execute(
+                """
+                INSERT INTO opportunity_sources (
+                    opportunity_id, source, external_id, url, canonical_url,
+                    first_seen_at, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source, external_id) DO UPDATE SET
+                    opportunity_id = excluded.opportunity_id,
+                    url = excluded.url,
+                    canonical_url = excluded.canonical_url,
+                    last_seen_at = excluded.last_seen_at
+                """,
+                (
+                    row["id"],
+                    opportunity.source,
+                    opportunity.external_id,
+                    opportunity.url,
+                    canonical_url,
+                    row["created_at"],
+                    row["updated_at"],
+                ),
+            )
 
     @staticmethod
     def _heartbeat_key(service_name: str) -> str:

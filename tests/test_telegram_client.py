@@ -48,6 +48,25 @@ class TelegramBotAPIClientTests(unittest.TestCase):
         )
         self.assertNotIn("secret-token", rendered_traceback)
 
+    def test_sets_bot_commands(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.path, "/botsecret-token/setMyCommands")
+            self.assertEqual(
+                json.loads(request.content),
+                {
+                    "commands": [
+                        {"command": "profile", "description": "View profile"},
+                    ]
+                },
+            )
+            return httpx.Response(200, json={"ok": True, "result": True}, request=request)
+
+        client = TelegramBotAPIClient(
+            token="secret-token",
+            transport=httpx.MockTransport(handler),
+        )
+        client.set_my_commands([{"command": "profile", "description": "View profile"}])
+
 
 if __name__ == "__main__":
     unittest.main()

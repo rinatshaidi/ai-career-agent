@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from datetime import datetime
 from uuid import uuid4
 
 from models import CandidateProfile
@@ -32,6 +33,37 @@ class FailingProvider:
     def fetch(self):
         self.calls += 1
         raise ProviderError("source unavailable")
+
+
+class NonRetryingProvider(FailingProvider):
+    source = "non_retrying"
+    retry_attempts = 1
+
+
+class BulkProvider:
+    source = "bulk"
+
+    def __init__(self, count: int) -> None:
+        self.count = count
+        self.calls = 0
+
+    def fetch(self):
+        self.calls += 1
+        return [make_opportunity(f"bulk-{index}") for index in range(self.count)]
+
+
+class IncrementalProvider:
+    source = "incremental"
+
+    def __init__(self) -> None:
+        self.since_values: list[datetime | None] = []
+
+    def fetch(self):
+        raise AssertionError("Pipeline should prefer fetch_since when it is available.")
+
+    def fetch_since(self, last_success_at):
+        self.since_values.append(last_success_at)
+        return []
 
 
 class FakeAnalyzer:
@@ -185,6 +217,105 @@ class PipelineTests(unittest.TestCase):
         state = self.repository.get_source_state("successful")
         self.assertIsNotNone(state)
         self.assertEqual(state.last_status, "completed")
+
+    def test_provider_can_disable_fast_retries(self) -> None:
+        provider = NonRetryingProvider()
+        pipeline = JobMonitorPipeline(
+            repository=self.repository,
+            providers=(provider,),
+            analyzer=FakeAnalyzer(),
+            telegram_client=FakeTelegramClient(),
+            chat_id="123",
+            ai_batch_size=5,
+            notification_batch_size=5,
+            minimum_score=70,
+            retry_policy=RetryPolicy(attempts=3, delay_seconds=0),
+            provider_intervals={"non_retrying": 21_600},
+            sleep=lambda _seconds: None,
+        )
+
+        first = pipeline.run_cycle()
+        second = pipeline.run_cycle()
+
+        self.assertEqual(provider.calls, 1)
+        self.assertEqual(first.sources_failed, 1)
+        self.assertEqual(second.sources_skipped, 1)
+
+    def test_initial_source_import_is_limited(self) -> None:
+        provider = BulkProvider(5)
+        pipeline = JobMonitorPipeline(
+            repository=self.repository,
+            providers=(provider,),
+            analyzer=FakeAnalyzer(),
+            telegram_client=FakeTelegramClient(),
+            chat_id="123",
+            ai_batch_size=5,
+            notification_batch_size=5,
+            minimum_score=70,
+            retry_policy=RetryPolicy(attempts=1, delay_seconds=0),
+            max_pending_ai_queue=50,
+            initial_source_import_limit=2,
+            sleep=lambda _seconds: None,
+        )
+
+        result = pipeline.run_cycle()
+
+        self.assertEqual(provider.calls, 1)
+        self.assertEqual(result.opportunities_received, 5)
+        self.assertEqual(result.opportunities_saved, 2)
+        self.assertEqual(result.opportunities_deferred, 3)
+        state = self.repository.get_source_state("bulk")
+        self.assertEqual(state.last_deferred, 3)
+
+    def test_full_ai_queue_defers_provider_without_consuming_schedule(self) -> None:
+        self.repository.add_many(
+            [make_opportunity(f"queued-{index}") for index in range(3)]
+        )
+        provider = BulkProvider(2)
+        pipeline = JobMonitorPipeline(
+            repository=self.repository,
+            providers=(provider,),
+            analyzer=FakeAnalyzer(),
+            telegram_client=FakeTelegramClient(),
+            chat_id="123",
+            ai_batch_size=1,
+            notification_batch_size=1,
+            minimum_score=70,
+            retry_policy=RetryPolicy(attempts=1, delay_seconds=0),
+            max_pending_ai_queue=3,
+            initial_source_import_limit=2,
+            sleep=lambda _seconds: None,
+        )
+
+        result = pipeline.run_cycle()
+
+        self.assertEqual(provider.calls, 0)
+        self.assertEqual(result.sources_queue_limited, 1)
+        self.assertEqual(result.sources_skipped, 1)
+        self.assertIsNone(self.repository.get_source_state("bulk"))
+        self.assertEqual(self.repository.count_pending_analysis(), 2)
+
+    def test_passes_last_success_time_to_incremental_provider(self) -> None:
+        provider = IncrementalProvider()
+        pipeline = JobMonitorPipeline(
+            repository=self.repository,
+            providers=(provider,),
+            analyzer=FakeAnalyzer(),
+            telegram_client=FakeTelegramClient(),
+            chat_id="123",
+            ai_batch_size=5,
+            notification_batch_size=5,
+            minimum_score=70,
+            retry_policy=RetryPolicy(attempts=1, delay_seconds=0),
+            sleep=lambda _seconds: None,
+        )
+
+        pipeline.run_cycle()
+        first_state = self.repository.get_source_state("incremental")
+        pipeline.run_cycle()
+
+        self.assertEqual(provider.since_values[0], None)
+        self.assertEqual(provider.since_values[1], first_state.last_success_at)
 
 
 if __name__ == "__main__":

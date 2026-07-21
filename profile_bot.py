@@ -6,6 +6,7 @@ import sys
 from config import SettingsError, settings
 from services import (
     ProfileBotRunner,
+    BOT_COMMANDS,
     TelegramAPIError,
     TelegramBotAPIClient,
     TelegramProfileBot,
@@ -48,6 +49,7 @@ def main() -> int:
             raise TelegramAPIError(
                 "This bot already has a webhook. JobMonitor will not replace it automatically."
             )
+        client.set_my_commands(BOT_COMMANDS)
         handler = TelegramProfileBot(
             repository,
             client,
